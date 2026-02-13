@@ -262,29 +262,35 @@ export default function AnalyticsPage() {
 
       const vt = vehicleType === "BUS" || vehicleType === "CAM" ? vehicleType : null;
 
+      // Use the same logic as the RPC: get the latest counter_end per driver
+      // by querying monthly_records and keeping the most recent month per driver
       let query = supabase
-        .from("driver_period_summary")
-        .select("driver_id, code_salarie, vehicle_type, latest_counter")
-        .in("period_id", periodIds);
+        .from("monthly_records")
+        .select("driver_id, month, year, counter_end, drivers!inner(code_salarie, vehicle_type)")
+        .in("period_id", periodIds)
+        .order("year", { ascending: false })
+        .order("month", { ascending: false });
 
-      if (vt) query = query.eq("vehicle_type", vt);
-
-      // Apply bucket range filter
-      if (range.min !== -Infinity) query = query.gte("latest_counter", range.min);
-      if (range.max !== Infinity) query = query.lt("latest_counter", range.max);
+      if (vt) query = query.eq("drivers.vehicle_type", vt);
 
       const { data } = await query;
 
-      // Deduplicate by driver (keep latest counter per driver across periods)
+      // Keep only the most recent record per driver (matching RPC's DISTINCT ON logic)
       const driverMap = new Map<string, BucketDriver>();
-      (data || []).forEach((d) => {
-        const existing = driverMap.get(d.driver_id);
-        if (!existing) {
-          driverMap.set(d.driver_id, {
-            driverId: d.driver_id,
-            codeSalarie: d.code_salarie,
-            vehicleType: d.vehicle_type,
-            latestCounter: Number(d.latest_counter),
+      (data || []).forEach((r) => {
+        if (driverMap.has(r.driver_id)) return; // first seen = most recent (ordered desc)
+        const counterEnd = Number(r.counter_end);
+        // Check if this driver falls in the selected bucket
+        const inBucket =
+          (range.min === -Infinity || counterEnd >= range.min) &&
+          (range.max === Infinity || counterEnd < range.max);
+        if (inBucket) {
+          const driver = r.drivers as unknown as { code_salarie: string; vehicle_type: string };
+          driverMap.set(r.driver_id, {
+            driverId: r.driver_id,
+            codeSalarie: driver.code_salarie,
+            vehicleType: driver.vehicle_type,
+            latestCounter: counterEnd,
           });
         }
       });
