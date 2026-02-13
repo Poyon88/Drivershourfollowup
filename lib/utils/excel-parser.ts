@@ -77,10 +77,10 @@ function parseNumericValue(value: unknown): number {
 function parseTimeValue(value: unknown): number {
   if (value === null || value === undefined || value === "") return 0;
   if (typeof value === "number") {
-    // Excel stores time as fraction of day, hours as actual numbers
-    // If value is small (< 1), it's likely a time fraction (e.g., 0.708333 = 17:00)
-    if (Math.abs(value) < 1) return value * 24;
-    return value;
+    // Excel stores ALL time values as fractions of a day (1 day = 1.0)
+    // e.g., 0.708333 = 17:00h, 1.806250 = 43:21h, -0.522917 = -12:33h
+    // Always convert by multiplying by 24 to get hours
+    return value * 24;
   }
   const str = String(value).trim();
   // Handle HH:MM format
