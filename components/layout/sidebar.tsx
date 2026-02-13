@@ -10,7 +10,7 @@ import {
   GitCompareArrows,
   BarChart3,
   Settings,
-  Truck,
+  Bus,
 } from "lucide-react";
 
 const navItems = [
@@ -29,7 +29,7 @@ export function Sidebar() {
     <aside className="flex h-screen w-64 flex-col border-r bg-sidebar-background">
       <div className="flex h-16 items-center gap-2 border-b px-6">
         <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary">
-          <Truck className="h-4 w-4 text-primary-foreground" />
+          <Bus className="h-4 w-4 text-primary-foreground" />
         </div>
         <span className="font-semibold text-lg">DHF</span>
       </div>

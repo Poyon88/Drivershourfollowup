@@ -63,6 +63,7 @@ interface PeriodComparison {
 interface AnalyticsClientProps {
   distribution: { bucket: string; count: number }[];
   driverAverages: DriverAverage[];
+  criticalDriverIds: string[];
   monthlyAvg: { name: string; moyenne: number }[];
   periodComparison: PeriodComparison[];
   statusBreakdown: { name: string; value: number; fill: string }[];
@@ -71,6 +72,7 @@ interface AnalyticsClientProps {
 export default function AnalyticsClient({
   distribution,
   driverAverages,
+  criticalDriverIds,
   monthlyAvg,
   periodComparison,
   statusBreakdown,
@@ -83,6 +85,10 @@ export default function AnalyticsClient({
   // Bucket drill-down state
   const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
   const [bucketSortAsc, setBucketSortAsc] = useState(true);
+
+  // Status pie drill-down state
+  const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
+  const [statusSortAsc, setStatusSortAsc] = useState(true);
 
   const handleBucketClick = useCallback(
     (bucket: string) => {
@@ -110,6 +116,19 @@ export default function AnalyticsClient({
 
   const sortedBucketDrivers = [...bucketDrivers].sort((a, b) =>
     bucketSortAsc ? a.avgCounter - b.avgCounter : b.avgCounter - a.avgCounter
+  );
+
+  // Filter drivers for the selected status from pie chart
+  const criticalSet = new Set(criticalDriverIds);
+  const statusDrivers = selectedStatus
+    ? driverAverages.filter((d) => {
+        const isCritical = criticalSet.has(d.driverId);
+        return selectedStatus === "Critique" ? isCritical : !isCritical;
+      })
+    : [];
+
+  const sortedStatusDrivers = [...statusDrivers].sort((a, b) =>
+    statusSortAsc ? a.avgCounter - b.avgCounter : b.avgCounter - a.avgCounter
   );
 
   return (
@@ -323,6 +342,9 @@ export default function AnalyticsClient({
         <Card>
           <CardHeader>
             <CardTitle>Répartition par statut</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              10% extrêmes = Critique — Cliquez sur une zone pour voir le détail
+            </p>
           </CardHeader>
           <CardContent>
             {statusBreakdown.length === 0 ? (
@@ -338,9 +360,25 @@ export default function AnalyticsClient({
                     dataKey="value"
                     nameKey="name"
                     label={({ name, value }) => `${name}: ${value}`}
+                    cursor="pointer"
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    onClick={(data: any) => {
+                      if (data?.name) {
+                        setSelectedStatus(
+                          selectedStatus === data.name ? null : data.name
+                        );
+                        setStatusSortAsc(true);
+                      }
+                    }}
                   >
                     {statusBreakdown.map((entry, i) => (
-                      <Cell key={i} fill={entry.fill} />
+                      <Cell
+                        key={i}
+                        fill={entry.fill}
+                        opacity={selectedStatus && selectedStatus !== entry.name ? 0.3 : 1}
+                        stroke={selectedStatus === entry.name ? "#000" : "none"}
+                        strokeWidth={selectedStatus === entry.name ? 2 : 0}
+                      />
                     ))}
                   </Pie>
                   <Tooltip />
@@ -351,6 +389,104 @@ export default function AnalyticsClient({
           </CardContent>
         </Card>
       </div>
+
+      {/* Status drill-down detail */}
+      {selectedStatus && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2">
+                <span
+                  className="inline-block h-3 w-3 rounded-full"
+                  style={{
+                    backgroundColor:
+                      selectedStatus === "Critique" ? "#ef4444" : "#22c55e",
+                  }}
+                />
+                Conducteurs : {selectedStatus}
+                <span className="text-muted-foreground font-normal text-sm">
+                  ({statusDrivers.length})
+                </span>
+              </CardTitle>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => setStatusSortAsc((prev) => !prev)}
+                >
+                  {statusSortAsc ? (
+                    <><ArrowUp className="mr-1 h-3 w-3" /> Plus basses</>
+                  ) : (
+                    <><ArrowDown className="mr-1 h-3 w-3" /> Plus hautes</>
+                  )}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setSelectedStatus(null)}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {sortedStatusDrivers.length === 0 ? (
+              <p className="py-4 text-center text-muted-foreground">Aucun conducteur</p>
+            ) : (
+              <div className="max-h-96 overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Code salarié</TableHead>
+                      <TableHead>Type</TableHead>
+                      <TableHead className="text-right">
+                        <button
+                          className="inline-flex items-center gap-1 hover:text-foreground"
+                          onClick={() => setStatusSortAsc((prev) => !prev)}
+                        >
+                          Compteur moy.
+                          <ArrowUpDown className="h-3 w-3" />
+                        </button>
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sortedStatusDrivers.map((d) => (
+                      <TableRow key={d.driverId}>
+                        <TableCell>
+                          <Link
+                            href={`/drivers/${d.driverId}`}
+                            className="font-medium text-primary hover:underline"
+                          >
+                            {d.codeSalarie}
+                          </Link>
+                        </TableCell>
+                        <TableCell>{d.vehicleType}</TableCell>
+                        <TableCell className="text-right font-mono font-medium">
+                          <span
+                            className={
+                              d.avgCounter > 10
+                                ? "text-red-600"
+                                : d.avgCounter < 0
+                                ? "text-blue-600"
+                                : "text-emerald-600"
+                            }
+                          >
+                            {d.avgCounter.toFixed(2)}h
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Bucket drill-down detail */}
       {selectedBucket && (

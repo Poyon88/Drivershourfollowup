@@ -2,7 +2,6 @@ import { createClient } from "@/lib/supabase/server";
 import { Suspense } from "react";
 import AnalyticsClient from "./analytics-client";
 import { FRENCH_MONTHS_SHORT } from "@/lib/constants";
-import { getDriverStatus } from "@/lib/utils/status-helpers";
 
 interface Props {
   searchParams: Promise<{ period?: string; vehicle?: string }>;
@@ -50,7 +49,7 @@ export default async function AnalyticsPage({ searchParams }: Props) {
   // 1. Counter distribution (average per driver across selected periods)
   let distQuery = supabase
     .from("driver_period_summary")
-    .select("driver_id, code_salarie, vehicle_type, latest_counter")
+    .select("driver_id, code_salarie, vehicle_type, latest_counter, total_overtime_pay")
     .in("period_id", periodIds)
     .limit(50000);
 
@@ -60,21 +59,37 @@ export default async function AnalyticsPage({ searchParams }: Props) {
 
   const { data: distData } = await distQuery;
 
-  // Group by driver and compute average latest_counter
+  // Group by driver and compute aggregates
   const driverAvgMap = new Map<
     string,
-    { driverId: string; codeSalarie: string; vehicleType: string; values: number[] }
+    {
+      driverId: string;
+      codeSalarie: string;
+      vehicleType: string;
+      counterValues: number[];
+      totalMissing: number;
+      totalExcess: number;
+    }
   >();
   (distData || []).forEach((d) => {
+    const counter = Number(d.latest_counter);
+    const overtimePay = Number(d.total_overtime_pay);
+    const missing = counter < 0 ? counter : 0;
+    const excess = Math.max(0, counter) + overtimePay;
+
     const existing = driverAvgMap.get(d.driver_id);
     if (existing) {
-      existing.values.push(Number(d.latest_counter));
+      existing.counterValues.push(counter);
+      existing.totalMissing += missing;
+      existing.totalExcess += excess;
     } else {
       driverAvgMap.set(d.driver_id, {
         driverId: d.driver_id,
         codeSalarie: d.code_salarie,
         vehicleType: d.vehicle_type,
-        values: [Number(d.latest_counter)],
+        counterValues: [counter],
+        totalMissing: missing,
+        totalExcess: excess,
       });
     }
   });
@@ -103,17 +118,27 @@ export default async function AnalyticsPage({ searchParams }: Props) {
   }
 
   // Build per-driver averages and distribution buckets
-  const driverAverages: { driverId: string; codeSalarie: string; vehicleType: string; avgCounter: number }[] = [];
+  const driverAverages: {
+    driverId: string;
+    codeSalarie: string;
+    vehicleType: string;
+    avgCounter: number;
+    totalMissing: number;
+    totalExcess: number;
+  }[] = [];
   const bucketCounts = new Map<string, number>();
   BUCKET_ORDER.forEach((b) => bucketCounts.set(b, 0));
 
   driverAvgMap.forEach((d) => {
-    const avg = d.values.reduce((a, b) => a + b, 0) / d.values.length;
+    const avg =
+      d.counterValues.reduce((a, b) => a + b, 0) / d.counterValues.length;
     driverAverages.push({
       driverId: d.driverId,
       codeSalarie: d.codeSalarie,
       vehicleType: d.vehicleType,
       avgCounter: avg,
+      totalMissing: d.totalMissing,
+      totalExcess: d.totalExcess,
     });
     const bucket = getBucket(avg);
     bucketCounts.set(bucket, (bucketCounts.get(bucket) || 0) + 1);
@@ -181,49 +206,46 @@ export default async function AnalyticsPage({ searchParams }: Props) {
     })
   );
 
-  // 4. Status breakdown
-  let summaryQuery = supabase
-    .from("driver_period_summary")
-    .select("latest_counter, buffer_hours, total_overtime_pay")
-    .in("period_id", periodIds)
-    .limit(10000);
+  // 4. Status breakdown based on 10% extremes
+  const totalDriverCount = driverAverages.length;
+  const topN = Math.max(1, Math.ceil(totalDriverCount * 0.1));
 
-  if (vehicleType) {
-    summaryQuery = summaryQuery.eq("vehicle_type", vehicleType);
-  }
+  // Top 10% most missing hours (most negative totalMissing)
+  const sortedByMissing = [...driverAverages]
+    .filter((d) => d.totalMissing < 0)
+    .sort((a, b) => a.totalMissing - b.totalMissing);
+  const criticalMissingIds = new Set(
+    sortedByMissing.slice(0, topN).map((d) => d.driverId)
+  );
 
-  const { data: summaryData } = await summaryQuery;
+  // Top 10% highest excess (overtime_pay + positive counter)
+  const sortedByExcess = [...driverAverages]
+    .filter((d) => d.totalExcess > 0)
+    .sort((a, b) => b.totalExcess - a.totalExcess);
+  const criticalExcessIds = new Set(
+    sortedByExcess.slice(0, topN).map((d) => d.driverId)
+  );
 
-  const statusCounts = { green: 0, orange: 0, red: 0 };
-  (summaryData || []).forEach((d) => {
-    const status = getDriverStatus(
-      Number(d.latest_counter),
-      Number(d.buffer_hours),
-      Number(d.total_overtime_pay) > 0
-    );
-    statusCounts[status]++;
+  let criticalCount = 0;
+  let normalCount = 0;
+  driverAverages.forEach((d) => {
+    if (criticalMissingIds.has(d.driverId) || criticalExcessIds.has(d.driverId)) {
+      criticalCount++;
+    } else {
+      normalCount++;
+    }
   });
 
-  const STATUS_COLORS = {
-    green: "#22c55e",
-    orange: "#f59e0b",
-    red: "#ef4444",
-  };
-  const STATUS_LABELS = {
-    green: "Normal",
-    orange: "Attention",
-    red: "Critique",
-  };
+  const criticalAllIds = new Set([...criticalMissingIds, ...criticalExcessIds]);
 
-  const statusBreakdown = (
-    Object.entries(statusCounts) as [keyof typeof statusCounts, number][]
-  )
-    .filter(([, v]) => v > 0)
-    .map(([key, value]) => ({
-      name: STATUS_LABELS[key],
-      value,
-      fill: STATUS_COLORS[key],
-    }));
+  const statusBreakdown = [
+    ...(normalCount > 0
+      ? [{ name: "Normal", value: normalCount, fill: "#22c55e" }]
+      : []),
+    ...(criticalCount > 0
+      ? [{ name: "Critique", value: criticalCount, fill: "#ef4444" }]
+      : []),
+  ];
 
   return (
     <Suspense
@@ -236,6 +258,7 @@ export default async function AnalyticsPage({ searchParams }: Props) {
       <AnalyticsClient
         distribution={distribution}
         driverAverages={driverAverages}
+        criticalDriverIds={Array.from(criticalAllIds)}
         monthlyAvg={monthlyAvg}
         periodComparison={periodComparison}
         statusBreakdown={statusBreakdown}
