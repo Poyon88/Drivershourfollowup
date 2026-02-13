@@ -1,11 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { ArrowUpDown, ArrowUp, ArrowDown, X } from "lucide-react";
 import { FRENCH_MONTHS_SHORT } from "@/lib/constants";
 import { getDriverStatus } from "@/lib/utils/status-helpers";
 import {
@@ -23,6 +25,22 @@ import {
   Pie,
   Legend,
 } from "recharts";
+
+const BUCKET_RANGES: Record<string, { min: number; max: number }> = {
+  "< -10h": { min: -Infinity, max: -10 },
+  "-10h à 0h": { min: -10, max: 0 },
+  "0h à 5h": { min: 0, max: 5 },
+  "5h à 10h": { min: 5, max: 10 },
+  "10h à 15h": { min: 10, max: 15 },
+  "> 15h": { min: 15, max: Infinity },
+};
+
+interface BucketDriver {
+  driverId: string;
+  codeSalarie: string;
+  vehicleType: string;
+  latestCounter: number;
+}
 
 const BUCKET_COLORS: Record<string, string> = {
   "< -10h": "#6366f1",
@@ -71,6 +89,12 @@ export default function AnalyticsPage() {
   const [monthlyAvg, setMonthlyAvg] = useState<{ name: string; moyenne: number }[]>([]);
   const [statusBreakdown, setStatusBreakdown] = useState<{ name: string; value: number; fill: string }[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Bucket drill-down state
+  const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
+  const [bucketDrivers, setBucketDrivers] = useState<BucketDriver[]>([]);
+  const [bucketSortAsc, setBucketSortAsc] = useState(true);
+  const [bucketLoading, setBucketLoading] = useState(false);
 
   useEffect(() => {
     async function fetchData() {
@@ -208,7 +232,73 @@ export default function AnalyticsPage() {
       setLoading(false);
     }
     fetchData();
+    setSelectedBucket(null);
+    setBucketDrivers([]);
   }, [periodParam, vehicleType]);
+
+  const handleBucketClick = useCallback(
+    async (bucket: string) => {
+      if (selectedBucket === bucket) {
+        setSelectedBucket(null);
+        setBucketDrivers([]);
+        return;
+      }
+
+      const range = BUCKET_RANGES[bucket];
+      if (!range) return;
+
+      setSelectedBucket(bucket);
+      setBucketLoading(true);
+
+      const supabase = createClient();
+
+      let periodIds: string[] = [];
+      if (periodParam) {
+        periodIds = periodParam.split(",");
+      } else {
+        const { data } = await supabase.from("reference_periods").select("id");
+        periodIds = data?.map((p) => p.id) || [];
+      }
+
+      const vt = vehicleType === "BUS" || vehicleType === "CAM" ? vehicleType : null;
+
+      let query = supabase
+        .from("driver_period_summary")
+        .select("driver_id, code_salarie, vehicle_type, latest_counter")
+        .in("period_id", periodIds);
+
+      if (vt) query = query.eq("vehicle_type", vt);
+
+      // Apply bucket range filter
+      if (range.min !== -Infinity) query = query.gte("latest_counter", range.min);
+      if (range.max !== Infinity) query = query.lt("latest_counter", range.max);
+
+      const { data } = await query;
+
+      // Deduplicate by driver (keep latest counter per driver across periods)
+      const driverMap = new Map<string, BucketDriver>();
+      (data || []).forEach((d) => {
+        const existing = driverMap.get(d.driver_id);
+        if (!existing) {
+          driverMap.set(d.driver_id, {
+            driverId: d.driver_id,
+            codeSalarie: d.code_salarie,
+            vehicleType: d.vehicle_type,
+            latestCounter: Number(d.latest_counter),
+          });
+        }
+      });
+
+      setBucketDrivers(Array.from(driverMap.values()));
+      setBucketSortAsc(true);
+      setBucketLoading(false);
+    },
+    [selectedBucket, periodParam, vehicleType]
+  );
+
+  const sortedBucketDrivers = [...bucketDrivers].sort((a, b) =>
+    bucketSortAsc ? a.latestCounter - b.latestCounter : b.latestCounter - a.latestCounter
+  );
 
   if (loading) {
     return (
@@ -363,20 +453,36 @@ export default function AnalyticsPage() {
         <Card>
           <CardHeader>
             <CardTitle>Distribution des compteurs</CardTitle>
+            <p className="text-xs text-muted-foreground">Cliquez sur une barre pour voir le détail</p>
           </CardHeader>
           <CardContent>
             {distribution.length === 0 ? (
               <p className="py-8 text-center text-muted-foreground">Aucune donnée</p>
             ) : (
               <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={distribution}>
+                <BarChart
+                  data={distribution}
+                  onClick={(state: Record<string, unknown>) => {
+                    const payload = state?.activePayload as Array<{ payload: { bucket: string } }> | undefined;
+                    if (payload?.[0]?.payload?.bucket) {
+                      handleBucketClick(payload[0].payload.bucket);
+                    }
+                  }}
+                  style={{ cursor: "pointer" }}
+                >
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                   <XAxis dataKey="bucket" fontSize={11} />
                   <YAxis fontSize={12} />
                   <Tooltip />
                   <Bar dataKey="count" name="Conducteurs" radius={[4, 4, 0, 0]}>
                     {distribution.map((entry, i) => (
-                      <Cell key={i} fill={BUCKET_COLORS[entry.bucket] || "#6366f1"} />
+                      <Cell
+                        key={i}
+                        fill={BUCKET_COLORS[entry.bucket] || "#6366f1"}
+                        opacity={selectedBucket && selectedBucket !== entry.bucket ? 0.3 : 1}
+                        stroke={selectedBucket === entry.bucket ? "#000" : "none"}
+                        strokeWidth={selectedBucket === entry.bucket ? 2 : 0}
+                      />
                     ))}
                   </Bar>
                 </BarChart>
@@ -417,6 +523,103 @@ export default function AnalyticsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Bucket drill-down detail */}
+      {selectedBucket && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2">
+                <span
+                  className="inline-block h-3 w-3 rounded-sm"
+                  style={{ backgroundColor: BUCKET_COLORS[selectedBucket] || "#6366f1" }}
+                />
+                Conducteurs : {selectedBucket}
+                <span className="text-muted-foreground font-normal text-sm">
+                  ({bucketDrivers.length})
+                </span>
+              </CardTitle>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => setBucketSortAsc((prev) => !prev)}
+                >
+                  {bucketSortAsc ? (
+                    <><ArrowUp className="mr-1 h-3 w-3" /> Plus basses</>
+                  ) : (
+                    <><ArrowDown className="mr-1 h-3 w-3" /> Plus hautes</>
+                  )}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => { setSelectedBucket(null); setBucketDrivers([]); }}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {bucketLoading ? (
+              <p className="py-4 text-center text-muted-foreground">Chargement...</p>
+            ) : sortedBucketDrivers.length === 0 ? (
+              <p className="py-4 text-center text-muted-foreground">Aucun conducteur</p>
+            ) : (
+              <div className="max-h-96 overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Code salarié</TableHead>
+                      <TableHead>Type</TableHead>
+                      <TableHead className="text-right">
+                        <button
+                          className="inline-flex items-center gap-1 hover:text-foreground"
+                          onClick={() => setBucketSortAsc((prev) => !prev)}
+                        >
+                          Compteur
+                          <ArrowUpDown className="h-3 w-3" />
+                        </button>
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sortedBucketDrivers.map((d) => (
+                      <TableRow key={d.driverId}>
+                        <TableCell>
+                          <Link
+                            href={`/drivers/${d.driverId}`}
+                            className="font-medium text-primary hover:underline"
+                          >
+                            {d.codeSalarie}
+                          </Link>
+                        </TableCell>
+                        <TableCell>{d.vehicleType}</TableCell>
+                        <TableCell className="text-right font-mono font-medium">
+                          <span
+                            className={
+                              d.latestCounter > 10
+                                ? "text-red-600"
+                                : d.latestCounter < 0
+                                ? "text-blue-600"
+                                : "text-emerald-600"
+                            }
+                          >
+                            {d.latestCounter.toFixed(2)}h
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Monthly evolution */}
       <Card>
