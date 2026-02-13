@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
 import { FRENCH_MONTHS_SHORT } from "@/lib/constants";
 import { getDriverStatus } from "@/lib/utils/status-helpers";
 import {
@@ -63,6 +64,9 @@ export default function AnalyticsPage() {
   const vehicleType = searchParams.get("vehicle");
 
   const [periodComparison, setPeriodComparison] = useState<PeriodComparison[]>([]);
+  const [visibleMetrics, setVisibleMetrics] = useState<Set<string>>(
+    new Set(["Heures payées", "Heures positives fin", "Heures manquantes fin"])
+  );
   const [distribution, setDistribution] = useState<{ bucket: string; count: number }[]>([]);
   const [monthlyAvg, setMonthlyAvg] = useState<{ name: string; moyenne: number }[]>([]);
   const [statusBreakdown, setStatusBreakdown] = useState<{ name: string; value: number; fill: string }[]>([]);
@@ -229,7 +233,40 @@ export default function AnalyticsPage() {
         <>
           <Card>
             <CardHeader>
-              <CardTitle>Comparaison par période</CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle>Comparaison par période</CardTitle>
+                <div className="flex gap-1.5">
+                  {([
+                    { key: "Heures payées", color: "#ef4444", label: "Payées" },
+                    { key: "Heures positives fin", color: "#22c55e", label: "Positives" },
+                    { key: "Heures manquantes fin", color: "#3b82f6", label: "Manquantes" },
+                  ] as const).map(({ key, color, label }) => {
+                    const active = visibleMetrics.has(key);
+                    return (
+                      <Button
+                        key={key}
+                        size="sm"
+                        variant={active ? "default" : "outline"}
+                        className="text-xs h-7 px-2.5"
+                        style={active ? { backgroundColor: color, borderColor: color } : { color, borderColor: color }}
+                        onClick={() => {
+                          setVisibleMetrics((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(key)) {
+                              if (next.size > 1) next.delete(key);
+                            } else {
+                              next.add(key);
+                            }
+                            return next;
+                          });
+                        }}
+                      >
+                        {label}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
             </CardHeader>
             <CardContent>
               <ResponsiveContainer width="100%" height={350}>
@@ -253,9 +290,15 @@ export default function AnalyticsPage() {
                     }}
                   />
                   <Legend />
-                  <Bar dataKey="Heures payées" fill="#ef4444" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="Heures positives fin" fill="#22c55e" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="Heures manquantes fin" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                  {visibleMetrics.has("Heures payées") && (
+                    <Bar dataKey="Heures payées" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                  )}
+                  {visibleMetrics.has("Heures positives fin") && (
+                    <Bar dataKey="Heures positives fin" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                  )}
+                  {visibleMetrics.has("Heures manquantes fin") && (
+                    <Bar dataKey="Heures manquantes fin" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                  )}
                 </BarChart>
               </ResponsiveContainer>
             </CardContent>
