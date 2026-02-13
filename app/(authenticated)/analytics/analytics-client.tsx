@@ -132,7 +132,8 @@ export default function AnalyticsPage() {
         .select("month, year, counter_end, driver_id, drivers!inner(vehicle_type)")
         .in("period_id", periodIds)
         .order("year")
-        .order("month");
+        .order("month")
+        .limit(50000);
 
       if (vt) {
         monthQuery = monthQuery.eq("drivers.vehicle_type", vt);
@@ -159,11 +160,34 @@ export default function AnalyticsPage() {
         setMonthlyAvg(avgData);
       }
 
-      // 3. Status breakdown + Period comparison (same query, different aggregations)
+      // 3. Period comparison (server-side aggregation via RPC)
+      const { data: comparisonData } = await supabase.rpc("get_period_comparison", {
+        p_period_ids: periodIds,
+        p_vehicle_type: vt,
+      });
+      if (comparisonData) {
+        setPeriodComparison(
+          comparisonData.map((d: Record<string, unknown>) => ({
+            periodId: String(d.period_id),
+            periodLabel: String(d.period_label),
+            year: Number(d.year),
+            periodNumber: Number(d.period_number),
+            totalDrivers: Number(d.total_drivers),
+            totalOvertimePay: Number(d.total_overtime_pay),
+            totalPositiveEnd: Number(d.total_positive_end),
+            driversPositive: Number(d.drivers_positive),
+            totalMissingEnd: Number(d.total_missing_end),
+            driversNegative: Number(d.drivers_negative),
+          }))
+        );
+      }
+
+      // 4. Status breakdown (needs all rows, set high limit)
       let summaryQuery = supabase
         .from("driver_period_summary")
-        .select("period_id, period_label, year, period_number, latest_counter, buffer_hours, total_overtime_pay, vehicle_type")
-        .in("period_id", periodIds);
+        .select("latest_counter, buffer_hours, total_overtime_pay")
+        .in("period_id", periodIds)
+        .limit(10000);
 
       if (vt) {
         summaryQuery = summaryQuery.eq("vehicle_type", vt);
@@ -171,7 +195,6 @@ export default function AnalyticsPage() {
 
       const { data: summaryData } = await summaryQuery;
       if (summaryData) {
-        // Status breakdown
         const counts = { green: 0, orange: 0, red: 0 };
         summaryData.forEach((d) => {
           const status = getDriverStatus(
@@ -191,42 +214,6 @@ export default function AnalyticsPage() {
               fill: STATUS_COLORS[key],
             }))
         );
-
-        // Period comparison aggregation
-        const periodMap = new Map<string, PeriodComparison>();
-        summaryData.forEach((d) => {
-          const pid = d.period_id;
-          if (!periodMap.has(pid)) {
-            periodMap.set(pid, {
-              periodId: pid,
-              periodLabel: d.period_label,
-              year: d.year,
-              periodNumber: d.period_number,
-              totalDrivers: 0,
-              totalOvertimePay: 0,
-              totalPositiveEnd: 0,
-              driversPositive: 0,
-              totalMissingEnd: 0,
-              driversNegative: 0,
-            });
-          }
-          const entry = periodMap.get(pid)!;
-          entry.totalDrivers++;
-          entry.totalOvertimePay += Number(d.total_overtime_pay);
-          const counter = Number(d.latest_counter);
-          if (counter > 0) {
-            entry.totalPositiveEnd += counter;
-            entry.driversPositive++;
-          } else if (counter < 0) {
-            entry.totalMissingEnd += Math.abs(counter);
-            entry.driversNegative++;
-          }
-        });
-
-        const sorted = Array.from(periodMap.values()).sort(
-          (a, b) => a.year - b.year || a.periodNumber - b.periodNumber
-        );
-        setPeriodComparison(sorted);
       }
 
       setLoading(false);
