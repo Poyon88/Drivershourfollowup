@@ -460,21 +460,21 @@ export default function AnalyticsPage() {
               <p className="py-8 text-center text-muted-foreground">Aucune donnée</p>
             ) : (
               <ResponsiveContainer width="100%" height={300}>
-                <BarChart
-                  data={distribution}
-                  onClick={(state: Record<string, unknown>) => {
-                    const payload = state?.activePayload as Array<{ payload: { bucket: string } }> | undefined;
-                    if (payload?.[0]?.payload?.bucket) {
-                      handleBucketClick(payload[0].payload.bucket);
-                    }
-                  }}
-                  style={{ cursor: "pointer" }}
-                >
+                <BarChart data={distribution}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                   <XAxis dataKey="bucket" fontSize={11} />
                   <YAxis fontSize={12} />
                   <Tooltip />
-                  <Bar dataKey="count" name="Conducteurs" radius={[4, 4, 0, 0]}>
+                  <Bar
+                    dataKey="count"
+                    name="Conducteurs"
+                    radius={[4, 4, 0, 0]}
+                    cursor="pointer"
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    onClick={(data: any) => {
+                      if (data?.bucket) handleBucketClick(data.bucket);
+                    }}
+                  >
                     {distribution.map((entry, i) => (
                       <Cell
                         key={i}
