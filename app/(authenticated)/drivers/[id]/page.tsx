@@ -29,8 +29,9 @@ export default async function DriverDetailPage({ params, searchParams }: Props) 
 
   if (!driver) notFound();
 
-  // Get period
-  let periodId = sp.period;
+  // Get period (use first if multi-select, or latest)
+  const periodParam = sp.period || "";
+  let periodId = periodParam.split(",")[0] || "";
   if (!periodId) {
     const { data: latestPeriod } = await supabase
       .from("reference_periods")
@@ -39,7 +40,7 @@ export default async function DriverDetailPage({ params, searchParams }: Props) 
       .order("period_number", { ascending: false })
       .limit(1)
       .single();
-    periodId = latestPeriod?.id;
+    periodId = latestPeriod?.id || "";
   }
 
   // Fetch all periods for navigation

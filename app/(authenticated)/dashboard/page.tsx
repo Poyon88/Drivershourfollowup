@@ -11,20 +11,18 @@ export default async function DashboardPage({ searchParams }: Props) {
   const params = await searchParams;
   const supabase = await createClient();
 
-  // Get latest period if none selected
-  let periodId = params.period;
-  if (!periodId) {
-    const { data: latestPeriod } = await supabase
+  // Parse period IDs (comma-separated) or fetch all
+  let periodIds: string[] = [];
+  if (params.period) {
+    periodIds = params.period.split(",");
+  } else {
+    const { data: allPeriods } = await supabase
       .from("reference_periods")
-      .select("id")
-      .order("year", { ascending: false })
-      .order("period_number", { ascending: false })
-      .limit(1)
-      .single();
-    periodId = latestPeriod?.id;
+      .select("id");
+    periodIds = allPeriods?.map((p) => p.id) || [];
   }
 
-  if (!periodId) {
+  if (periodIds.length === 0) {
     return (
       <div className="space-y-6">
         <div>
@@ -45,13 +43,13 @@ export default async function DashboardPage({ searchParams }: Props) {
 
   // Fetch dashboard stats
   const { data: stats } = await supabase.rpc("get_dashboard_stats", {
-    p_period_id: periodId,
+    p_period_ids: periodIds,
     p_vehicle_type: vehicleType,
   });
 
   // Fetch counter distribution
   const { data: distribution } = await supabase.rpc("get_counter_distribution", {
-    p_period_id: periodId,
+    p_period_ids: periodIds,
     p_vehicle_type: vehicleType,
   });
 
@@ -59,7 +57,7 @@ export default async function DashboardPage({ searchParams }: Props) {
   let overtimeQuery = supabase
     .from("driver_period_summary")
     .select("driver_id, code_salarie, vehicle_type, total_overtime_pay, latest_counter")
-    .eq("period_id", periodId)
+    .in("period_id", periodIds)
     .gt("total_overtime_pay", 0)
     .order("total_overtime_pay", { ascending: false })
     .limit(20);

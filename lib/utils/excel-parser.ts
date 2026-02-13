@@ -114,6 +114,7 @@ function detectColumns(headers: string[]): ColumnMapping | null {
   let codeSalarieCol = -1;
   let vehicleTypeCol = -1;
   let bufferCol = -1;
+  let regularizationCol = -1;
   const monthColumns = new Map<
     number,
     {
@@ -138,6 +139,9 @@ function detectColumns(headers: string[]): ColumnMapping | null {
     ) {
       // Only take the first buffer column (repeats for each month group)
       if (bufferCol === -1) bufferCol = i;
+    } else if (h.includes("regularisation") || h.includes("regul")) {
+      // "Régularisation Q1/Q2/Q3" — period-end balance, no month in header
+      if (regularizationCol === -1) regularizationCol = i;
     } else {
       const month = detectMonthFromHeader(headers[i] || "");
       if (month !== null) {
@@ -165,6 +169,15 @@ function detectColumns(headers: string[]): ColumnMapping | null {
           if (entry.counterEndCol === null) entry.counterEndCol = i;
         }
       }
+    }
+  }
+
+  // Assign regularization column to the last month's counterEndCol
+  if (regularizationCol >= 0 && monthColumns.size > 0) {
+    const lastMonth = Math.max(...monthColumns.keys());
+    const lastEntry = monthColumns.get(lastMonth)!;
+    if (lastEntry.counterEndCol === null) {
+      lastEntry.counterEndCol = regularizationCol;
     }
   }
 

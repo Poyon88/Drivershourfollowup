@@ -82,6 +82,27 @@ export default function ImportPage() {
         periodNumber: sheet.detectedPeriod?.periodNumber || getCurrentPeriod().periodNumber,
         year: sheet.detectedPeriod?.year || defaultYear,
       }));
+
+      // Auto-disable duplicate periods: keep the sheet with the most data
+      const seen = new Map<string, number>(); // "periodNumber-year" → config index
+      for (let i = 0; i < configs.length; i++) {
+        if (!configs[i].enabled) continue;
+        const key = `${configs[i].periodNumber}-${configs[i].year}`;
+        if (seen.has(key)) {
+          const prevIndex = seen.get(key)!;
+          const prevCount = result.sheets[configs[prevIndex].sheetIndex].data.length;
+          const currCount = result.sheets[configs[i].sheetIndex].data.length;
+          // Disable the one with fewer rows
+          if (currCount > prevCount) {
+            configs[prevIndex].enabled = false;
+          } else {
+            configs[i].enabled = false;
+          }
+        } else {
+          seen.set(key, i);
+        }
+      }
+
       setSheetConfigs(configs);
       setStage("preview");
     },
@@ -257,6 +278,11 @@ export default function ImportPage() {
             if (!config) return null;
             const hasErrors = sheet.errors.length > 0;
             const hasData = sheet.data.length > 0;
+            // Check if another enabled sheet has the same period
+            const isDuplicate = hasData && !hasErrors && sheetConfigs.some(
+              (other, j) => j !== index && other.enabled &&
+                other.periodNumber === config.periodNumber && other.year === config.year
+            );
 
             return (
               <Card key={index} className={!config.enabled ? "opacity-60" : ""}>
@@ -271,6 +297,11 @@ export default function ImportPage() {
                       {!hasErrors && hasData && (
                         <Badge variant="outline" className="text-xs text-emerald-600">
                           {sheet.data.length} chauffeurs — {sheet.detectedMonths.length} mois
+                        </Badge>
+                      )}
+                      {isDuplicate && !config.enabled && (
+                        <Badge variant="outline" className="text-xs text-amber-600">
+                          Doublon
                         </Badge>
                       )}
                     </CardTitle>

@@ -9,20 +9,18 @@ export default async function DriversPage({ searchParams }: Props) {
   const params = await searchParams;
   const supabase = await createClient();
 
-  // Get latest period if none selected
-  let periodId = params.period;
-  if (!periodId) {
-    const { data: latestPeriod } = await supabase
+  // Parse period IDs (comma-separated) or fetch all
+  let periodIds: string[] = [];
+  if (params.period) {
+    periodIds = params.period.split(",");
+  } else {
+    const { data: allPeriods } = await supabase
       .from("reference_periods")
-      .select("id")
-      .order("year", { ascending: false })
-      .order("period_number", { ascending: false })
-      .limit(1)
-      .single();
-    periodId = latestPeriod?.id;
+      .select("id");
+    periodIds = allPeriods?.map((p) => p.id) || [];
   }
 
-  if (!periodId) {
+  if (periodIds.length === 0) {
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-bold">Conducteurs</h1>
@@ -41,7 +39,7 @@ export default async function DriversPage({ searchParams }: Props) {
   let query = supabase
     .from("driver_period_summary")
     .select("*")
-    .eq("period_id", periodId)
+    .in("period_id", periodIds)
     .order("code_salarie");
 
   if (vehicleType) {

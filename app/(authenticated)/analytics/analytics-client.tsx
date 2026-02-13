@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { FRENCH_MONTHS_SHORT } from "@/lib/constants";
 import { getDriverStatus } from "@/lib/utils/status-helpers";
 import {
@@ -43,11 +44,25 @@ const STATUS_LABELS = {
   red: "Critique",
 };
 
+interface PeriodComparison {
+  periodId: string;
+  periodLabel: string;
+  year: number;
+  periodNumber: number;
+  totalDrivers: number;
+  totalOvertimePay: number;
+  totalPositiveEnd: number;
+  driversPositive: number;
+  totalMissingEnd: number;
+  driversNegative: number;
+}
+
 export default function AnalyticsPage() {
   const searchParams = useSearchParams();
-  const periodId = searchParams.get("period");
+  const periodParam = searchParams.get("period") || "";
   const vehicleType = searchParams.get("vehicle");
 
+  const [periodComparison, setPeriodComparison] = useState<PeriodComparison[]>([]);
   const [distribution, setDistribution] = useState<{ bucket: string; count: number }[]>([]);
   const [monthlyAvg, setMonthlyAvg] = useState<{ name: string; moyenne: number }[]>([]);
   const [statusBreakdown, setStatusBreakdown] = useState<{ name: string; value: number; fill: string }[]>([]);
@@ -58,20 +73,18 @@ export default function AnalyticsPage() {
       setLoading(true);
       const supabase = createClient();
 
-      // Get period ID
-      let pid = periodId;
-      if (!pid) {
+      // Parse period IDs (comma-separated) or fetch all
+      let periodIds: string[] = [];
+      if (periodParam) {
+        periodIds = periodParam.split(",");
+      } else {
         const { data } = await supabase
           .from("reference_periods")
-          .select("id")
-          .order("year", { ascending: false })
-          .order("period_number", { ascending: false })
-          .limit(1)
-          .single();
-        pid = data?.id;
+          .select("id");
+        periodIds = data?.map((p) => p.id) || [];
       }
 
-      if (!pid) {
+      if (periodIds.length === 0) {
         setLoading(false);
         return;
       }
@@ -80,7 +93,7 @@ export default function AnalyticsPage() {
 
       // 1. Counter distribution
       const { data: dist } = await supabase.rpc("get_counter_distribution", {
-        p_period_id: pid,
+        p_period_ids: periodIds,
         p_vehicle_type: vt,
       });
       setDistribution(dist || []);
@@ -89,7 +102,7 @@ export default function AnalyticsPage() {
       let monthQuery = supabase
         .from("monthly_records")
         .select("month, year, counter_end, driver_id, drivers!inner(vehicle_type)")
-        .eq("period_id", pid)
+        .in("period_id", periodIds)
         .order("year")
         .order("month");
 
@@ -101,7 +114,7 @@ export default function AnalyticsPage() {
       if (monthlyData) {
         const grouped = new Map<string, number[]>();
         monthlyData.forEach((r) => {
-          const key = `${r.year}-${r.month}`;
+          const key = `${r.year}-${String(r.month).padStart(2, "0")}`;
           if (!grouped.has(key)) grouped.set(key, []);
           grouped.get(key)!.push(Number(r.counter_end));
         });
@@ -118,11 +131,11 @@ export default function AnalyticsPage() {
         setMonthlyAvg(avgData);
       }
 
-      // 3. Status breakdown
+      // 3. Status breakdown + Period comparison (same query, different aggregations)
       let summaryQuery = supabase
         .from("driver_period_summary")
-        .select("latest_counter, buffer_hours, total_overtime_pay, vehicle_type")
-        .eq("period_id", pid);
+        .select("period_id, period_label, year, period_number, latest_counter, buffer_hours, total_overtime_pay, vehicle_type")
+        .in("period_id", periodIds);
 
       if (vt) {
         summaryQuery = summaryQuery.eq("vehicle_type", vt);
@@ -130,6 +143,7 @@ export default function AnalyticsPage() {
 
       const { data: summaryData } = await summaryQuery;
       if (summaryData) {
+        // Status breakdown
         const counts = { green: 0, orange: 0, red: 0 };
         summaryData.forEach((d) => {
           const status = getDriverStatus(
@@ -149,12 +163,48 @@ export default function AnalyticsPage() {
               fill: STATUS_COLORS[key],
             }))
         );
+
+        // Period comparison aggregation
+        const periodMap = new Map<string, PeriodComparison>();
+        summaryData.forEach((d) => {
+          const pid = d.period_id;
+          if (!periodMap.has(pid)) {
+            periodMap.set(pid, {
+              periodId: pid,
+              periodLabel: d.period_label,
+              year: d.year,
+              periodNumber: d.period_number,
+              totalDrivers: 0,
+              totalOvertimePay: 0,
+              totalPositiveEnd: 0,
+              driversPositive: 0,
+              totalMissingEnd: 0,
+              driversNegative: 0,
+            });
+          }
+          const entry = periodMap.get(pid)!;
+          entry.totalDrivers++;
+          entry.totalOvertimePay += Number(d.total_overtime_pay);
+          const counter = Number(d.latest_counter);
+          if (counter > 0) {
+            entry.totalPositiveEnd += counter;
+            entry.driversPositive++;
+          } else if (counter < 0) {
+            entry.totalMissingEnd += Math.abs(counter);
+            entry.driversNegative++;
+          }
+        });
+
+        const sorted = Array.from(periodMap.values()).sort(
+          (a, b) => a.year - b.year || a.periodNumber - b.periodNumber
+        );
+        setPeriodComparison(sorted);
       }
 
       setLoading(false);
     }
     fetchData();
-  }, [periodId, vehicleType]);
+  }, [periodParam, vehicleType]);
 
   if (loading) {
     return (
@@ -173,6 +223,97 @@ export default function AnalyticsPage() {
           Graphiques et tendances des heures excédentaires
         </p>
       </div>
+
+      {/* Period comparison section */}
+      {periodComparison.length > 0 && (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle>Comparaison par période</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={350}>
+                <BarChart
+                  data={periodComparison.map((p) => ({
+                    name: p.periodLabel,
+                    "Heures payées": Number(p.totalOvertimePay.toFixed(2)),
+                    "Heures positives fin": Number(p.totalPositiveEnd.toFixed(2)),
+                    "Heures manquantes fin": Number(p.totalMissingEnd.toFixed(2)),
+                  }))}
+                  margin={{ top: 5, right: 20, bottom: 5, left: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis dataKey="name" fontSize={12} />
+                  <YAxis fontSize={12} />
+                  <Tooltip
+                    formatter={(value) => [`${Number(value).toFixed(2)}h`]}
+                    contentStyle={{
+                      borderRadius: "8px",
+                      border: "1px solid hsl(var(--border))",
+                    }}
+                  />
+                  <Legend />
+                  <Bar dataKey="Heures payées" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="Heures positives fin" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="Heures manquantes fin" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Détail par période</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Période</TableHead>
+                    <TableHead className="text-right">Conducteurs</TableHead>
+                    <TableHead className="text-right">Heures payées</TableHead>
+                    <TableHead className="text-right">H. positives fin</TableHead>
+                    <TableHead className="text-right">H. manquantes fin</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {periodComparison.map((p) => (
+                    <TableRow key={p.periodId}>
+                      <TableCell className="font-medium">{p.periodLabel}</TableCell>
+                      <TableCell className="text-right">{p.totalDrivers}</TableCell>
+                      <TableCell className="text-right font-mono">
+                        {p.totalOvertimePay > 0 ? (
+                          <span className="text-red-600 font-medium">
+                            {p.totalOvertimePay.toFixed(2)}h
+                          </span>
+                        ) : (
+                          "0,00h"
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        <span className="text-emerald-600">
+                          {p.totalPositiveEnd.toFixed(2)}h
+                        </span>
+                        <span className="text-muted-foreground text-xs ml-1">
+                          ({p.driversPositive})
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        <span className="text-blue-600">
+                          {p.totalMissingEnd.toFixed(2)}h
+                        </span>
+                        <span className="text-muted-foreground text-xs ml-1">
+                          ({p.driversNegative})
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Distribution chart */}

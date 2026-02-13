@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
   Select,
@@ -10,7 +10,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { PERIODS, VEHICLE_TYPES } from "@/lib/constants";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { VEHICLE_TYPES } from "@/lib/constants";
+import { ChevronDown } from "lucide-react";
 
 interface ReferencePeriod {
   id: string;
@@ -24,8 +29,12 @@ export function Header() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [periods, setPeriods] = useState<ReferencePeriod[]>([]);
+  const [open, setOpen] = useState(false);
 
-  const periodId = searchParams.get("period") || "";
+  // Parse comma-separated period IDs from URL
+  const periodParam = searchParams.get("period") || "";
+  const selectedPeriodIds = periodParam ? periodParam.split(",") : [];
+
   const vehicleType = searchParams.get("vehicle") || "all";
 
   useEffect(() => {
@@ -41,10 +50,10 @@ export function Header() {
     fetchPeriods();
   }, []);
 
-  const updateFilter = useCallback(
+  const updateParams = useCallback(
     (key: string, value: string) => {
       const params = new URLSearchParams(searchParams.toString());
-      if (value && value !== "all") {
+      if (value) {
         params.set(key, value);
       } else {
         params.delete(key);
@@ -54,29 +63,90 @@ export function Header() {
     [router, pathname, searchParams]
   );
 
+  const togglePeriod = useCallback(
+    (id: string) => {
+      let next: string[];
+      if (selectedPeriodIds.includes(id)) {
+        next = selectedPeriodIds.filter((p) => p !== id);
+      } else {
+        next = [...selectedPeriodIds, id];
+      }
+      // If all selected or none selected, clear the param (= all)
+      if (next.length === 0 || next.length === periods.length) {
+        updateParams("period", "");
+      } else {
+        updateParams("period", next.join(","));
+      }
+    },
+    [selectedPeriodIds, periods, updateParams]
+  );
+
+  const selectAll = useCallback(() => {
+    updateParams("period", "");
+  }, [updateParams]);
+
+  const allSelected = selectedPeriodIds.length === 0;
+
+  // Display label for the trigger
+  let triggerLabel = "Toutes les périodes";
+  if (!allSelected) {
+    if (selectedPeriodIds.length === 1) {
+      const p = periods.find((p) => p.id === selectedPeriodIds[0]);
+      triggerLabel = p?.label || "1 période";
+    } else {
+      triggerLabel = `${selectedPeriodIds.length} périodes`;
+    }
+  }
+
   return (
     <header className="flex h-16 items-center justify-between border-b bg-background px-6">
       <div />
       <div className="flex items-center gap-3">
-        <Select
-          value={periodId}
-          onValueChange={(val) => updateFilter("period", val)}
-        >
-          <SelectTrigger className="w-[220px]">
-            <SelectValue placeholder="Période de référence" />
-          </SelectTrigger>
-          <SelectContent>
-            {periods.map((p) => (
-              <SelectItem key={p.id} value={p.id}>
-                {p.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {/* Period multi-select */}
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              role="combobox"
+              aria-expanded={open}
+              className="w-[260px] justify-between font-normal"
+            >
+              <span className="truncate">{triggerLabel}</span>
+              <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[260px] p-2" align="end">
+            {/* Select all */}
+            <label className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm cursor-pointer hover:bg-accent">
+              <Checkbox
+                checked={allSelected}
+                onCheckedChange={() => selectAll()}
+              />
+              <span className="font-medium">Toutes les périodes</span>
+            </label>
+            <div className="my-1 border-t" />
+            {/* Individual periods */}
+            {periods.map((p) => {
+              const isChecked = allSelected || selectedPeriodIds.includes(p.id);
+              return (
+                <label
+                  key={p.id}
+                  className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm cursor-pointer hover:bg-accent"
+                >
+                  <Checkbox
+                    checked={isChecked}
+                    onCheckedChange={() => togglePeriod(p.id)}
+                  />
+                  {p.label}
+                </label>
+              );
+            })}
+          </PopoverContent>
+        </Popover>
 
         <Select
           value={vehicleType}
-          onValueChange={(val) => updateFilter("vehicle", val)}
+          onValueChange={(val) => updateParams("vehicle", val === "all" ? "" : val)}
         >
           <SelectTrigger className="w-[130px]">
             <SelectValue placeholder="Type" />

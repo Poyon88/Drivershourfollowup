@@ -46,7 +46,8 @@ interface DriverWithRecords {
 
 export default function ComparisonPage() {
   const searchParams = useSearchParams();
-  const periodId = searchParams.get("period");
+  const periodParam = searchParams.get("period") || "";
+  const periodIds = periodParam ? periodParam.split(",") : [];
 
   const [allDrivers, setAllDrivers] = useState<Driver[]>([]);
   const [selectedDrivers, setSelectedDrivers] = useState<DriverWithRecords[]>([]);
@@ -78,7 +79,7 @@ export default function ComparisonPage() {
         .order("year")
         .order("month");
 
-      if (periodId) query = query.eq("period_id", periodId);
+      if (periodIds.length > 0) query = query.in("period_id", periodIds);
 
       const { data } = await query;
       setSelectedDrivers((prev) => [
@@ -97,7 +98,7 @@ export default function ComparisonPage() {
       setOpen(false);
       setSearch("");
     },
-    [selectedDrivers, periodId]
+    [selectedDrivers, periodIds]
   );
 
   const removeDriver = (id: string) => {
