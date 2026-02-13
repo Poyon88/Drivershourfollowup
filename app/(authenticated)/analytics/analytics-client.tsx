@@ -1,15 +1,11 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { useSearchParams } from "next/navigation";
+import { useState, useCallback } from "react";
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { ArrowUpDown, ArrowUp, ArrowDown, X } from "lucide-react";
-import { FRENCH_MONTHS_SHORT } from "@/lib/constants";
-import { getDriverStatus } from "@/lib/utils/status-helpers";
 import {
   BarChart,
   Bar,
@@ -35,13 +31,6 @@ const BUCKET_RANGES: Record<string, { min: number; max: number }> = {
   "> 15h": { min: 15, max: Infinity },
 };
 
-interface BucketDriver {
-  driverId: string;
-  codeSalarie: string;
-  vehicleType: string;
-  latestCounter: number;
-}
-
 const BUCKET_COLORS: Record<string, string> = {
   "< -10h": "#6366f1",
   "-10h à 0h": "#3b82f6",
@@ -51,17 +40,12 @@ const BUCKET_COLORS: Record<string, string> = {
   "> 15h": "#ef4444",
 };
 
-const STATUS_COLORS = {
-  green: "#22c55e",
-  orange: "#f59e0b",
-  red: "#ef4444",
-};
-
-const STATUS_LABELS = {
-  green: "Normal",
-  orange: "Attention",
-  red: "Critique",
-};
+interface DriverAverage {
+  driverId: string;
+  codeSalarie: string;
+  vehicleType: string;
+  avgCounter: number;
+}
 
 interface PeriodComparison {
   periodId: string;
@@ -76,231 +60,57 @@ interface PeriodComparison {
   driversNegative: number;
 }
 
-export default function AnalyticsPage() {
-  const searchParams = useSearchParams();
-  const periodParam = searchParams.get("period") || "";
-  const vehicleType = searchParams.get("vehicle");
+interface AnalyticsClientProps {
+  distribution: { bucket: string; count: number }[];
+  driverAverages: DriverAverage[];
+  monthlyAvg: { name: string; moyenne: number }[];
+  periodComparison: PeriodComparison[];
+  statusBreakdown: { name: string; value: number; fill: string }[];
+}
 
-  const [periodComparison, setPeriodComparison] = useState<PeriodComparison[]>([]);
+export default function AnalyticsClient({
+  distribution,
+  driverAverages,
+  monthlyAvg,
+  periodComparison,
+  statusBreakdown,
+}: AnalyticsClientProps) {
   const [visibleMetrics, setVisibleMetrics] = useState<Set<string>>(
     new Set(["Heures payées", "Heures positives fin", "Heures manquantes fin"])
   );
-  const [distribution, setDistribution] = useState<{ bucket: string; count: number }[]>([]);
-  const [monthlyAvg, setMonthlyAvg] = useState<{ name: string; moyenne: number }[]>([]);
-  const [statusBreakdown, setStatusBreakdown] = useState<{ name: string; value: number; fill: string }[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [comparisonMode, setComparisonMode] = useState<"sum" | "avg">("sum");
 
   // Bucket drill-down state
   const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
-  const [bucketDrivers, setBucketDrivers] = useState<BucketDriver[]>([]);
   const [bucketSortAsc, setBucketSortAsc] = useState(true);
-  const [bucketLoading, setBucketLoading] = useState(false);
-
-  useEffect(() => {
-    async function fetchData() {
-      setLoading(true);
-      const supabase = createClient();
-
-      // Parse period IDs (comma-separated) or fetch all
-      let periodIds: string[] = [];
-      if (periodParam) {
-        periodIds = periodParam.split(",");
-      } else {
-        const { data } = await supabase
-          .from("reference_periods")
-          .select("id");
-        periodIds = data?.map((p) => p.id) || [];
-      }
-
-      if (periodIds.length === 0) {
-        setLoading(false);
-        return;
-      }
-
-      const vt = vehicleType === "BUS" || vehicleType === "CAM" ? vehicleType : null;
-
-      // 1. Counter distribution
-      const { data: dist } = await supabase.rpc("get_counter_distribution", {
-        p_period_ids: periodIds,
-        p_vehicle_type: vt,
-      });
-      setDistribution(dist || []);
-
-      // 2. Monthly average evolution
-      let monthQuery = supabase
-        .from("monthly_records")
-        .select("month, year, counter_end, driver_id, drivers!inner(vehicle_type)")
-        .in("period_id", periodIds)
-        .order("year")
-        .order("month")
-        .limit(50000);
-
-      if (vt) {
-        monthQuery = monthQuery.eq("drivers.vehicle_type", vt);
-      }
-
-      const { data: monthlyData } = await monthQuery;
-      if (monthlyData) {
-        const grouped = new Map<string, number[]>();
-        monthlyData.forEach((r) => {
-          const key = `${r.year}-${String(r.month).padStart(2, "0")}`;
-          if (!grouped.has(key)) grouped.set(key, []);
-          grouped.get(key)!.push(Number(r.counter_end));
-        });
-
-        const avgData = Array.from(grouped.entries())
-          .sort()
-          .map(([key, values]) => {
-            const [year, month] = key.split("-").map(Number);
-            return {
-              name: `${FRENCH_MONTHS_SHORT[month]} ${year}`,
-              moyenne: values.reduce((a, b) => a + b, 0) / values.length,
-            };
-          });
-        setMonthlyAvg(avgData);
-      }
-
-      // 3. Period comparison (server-side aggregation via RPC)
-      const { data: comparisonData } = await supabase.rpc("get_period_comparison", {
-        p_period_ids: periodIds,
-        p_vehicle_type: vt,
-      });
-      if (comparisonData) {
-        setPeriodComparison(
-          comparisonData.map((d: Record<string, unknown>) => ({
-            periodId: String(d.period_id),
-            periodLabel: String(d.period_label),
-            year: Number(d.year),
-            periodNumber: Number(d.period_number),
-            totalDrivers: Number(d.total_drivers),
-            totalOvertimePay: Number(d.total_overtime_pay),
-            totalPositiveEnd: Number(d.total_positive_end),
-            driversPositive: Number(d.drivers_positive),
-            totalMissingEnd: Number(d.total_missing_end),
-            driversNegative: Number(d.drivers_negative),
-          }))
-        );
-      }
-
-      // 4. Status breakdown (needs all rows, set high limit)
-      let summaryQuery = supabase
-        .from("driver_period_summary")
-        .select("latest_counter, buffer_hours, total_overtime_pay")
-        .in("period_id", periodIds)
-        .limit(10000);
-
-      if (vt) {
-        summaryQuery = summaryQuery.eq("vehicle_type", vt);
-      }
-
-      const { data: summaryData } = await summaryQuery;
-      if (summaryData) {
-        const counts = { green: 0, orange: 0, red: 0 };
-        summaryData.forEach((d) => {
-          const status = getDriverStatus(
-            Number(d.latest_counter),
-            Number(d.buffer_hours),
-            Number(d.total_overtime_pay) > 0
-          );
-          counts[status]++;
-        });
-
-        setStatusBreakdown(
-          (Object.entries(counts) as [keyof typeof counts, number][])
-            .filter(([, v]) => v > 0)
-            .map(([key, value]) => ({
-              name: STATUS_LABELS[key],
-              value,
-              fill: STATUS_COLORS[key],
-            }))
-        );
-      }
-
-      setLoading(false);
-    }
-    fetchData();
-    setSelectedBucket(null);
-    setBucketDrivers([]);
-  }, [periodParam, vehicleType]);
 
   const handleBucketClick = useCallback(
-    async (bucket: string) => {
+    (bucket: string) => {
       if (selectedBucket === bucket) {
         setSelectedBucket(null);
-        setBucketDrivers([]);
-        return;
-      }
-
-      const range = BUCKET_RANGES[bucket];
-      if (!range) return;
-
-      setSelectedBucket(bucket);
-      setBucketLoading(true);
-
-      const supabase = createClient();
-
-      let periodIds: string[] = [];
-      if (periodParam) {
-        periodIds = periodParam.split(",");
       } else {
-        const { data } = await supabase.from("reference_periods").select("id");
-        periodIds = data?.map((p) => p.id) || [];
+        setSelectedBucket(bucket);
+        setBucketSortAsc(true);
       }
-
-      const vt = vehicleType === "BUS" || vehicleType === "CAM" ? vehicleType : null;
-
-      // Use the same logic as the RPC: get the latest counter_end per driver
-      // by querying monthly_records and keeping the most recent month per driver
-      let query = supabase
-        .from("monthly_records")
-        .select("driver_id, month, year, counter_end, drivers!inner(code_salarie, vehicle_type)")
-        .in("period_id", periodIds)
-        .order("year", { ascending: false })
-        .order("month", { ascending: false });
-
-      if (vt) query = query.eq("drivers.vehicle_type", vt);
-
-      const { data } = await query;
-
-      // Keep only the most recent record per driver (matching RPC's DISTINCT ON logic)
-      const driverMap = new Map<string, BucketDriver>();
-      (data || []).forEach((r) => {
-        if (driverMap.has(r.driver_id)) return; // first seen = most recent (ordered desc)
-        const counterEnd = Number(r.counter_end);
-        // Check if this driver falls in the selected bucket
-        const inBucket =
-          (range.min === -Infinity || counterEnd >= range.min) &&
-          (range.max === Infinity || counterEnd < range.max);
-        if (inBucket) {
-          const driver = r.drivers as unknown as { code_salarie: string; vehicle_type: string };
-          driverMap.set(r.driver_id, {
-            driverId: r.driver_id,
-            codeSalarie: driver.code_salarie,
-            vehicleType: driver.vehicle_type,
-            latestCounter: counterEnd,
-          });
-        }
-      });
-
-      setBucketDrivers(Array.from(driverMap.values()));
-      setBucketSortAsc(true);
-      setBucketLoading(false);
     },
-    [selectedBucket, periodParam, vehicleType]
+    [selectedBucket]
   );
+
+  // Filter drivers for the selected bucket from pre-computed averages
+  const bucketDrivers = selectedBucket
+    ? driverAverages.filter((d) => {
+        const range = BUCKET_RANGES[selectedBucket];
+        if (!range) return false;
+        return (
+          (range.min === -Infinity || d.avgCounter >= range.min) &&
+          (range.max === Infinity || d.avgCounter < range.max)
+        );
+      })
+    : [];
 
   const sortedBucketDrivers = [...bucketDrivers].sort((a, b) =>
-    bucketSortAsc ? a.latestCounter - b.latestCounter : b.latestCounter - a.latestCounter
+    bucketSortAsc ? a.avgCounter - b.avgCounter : b.avgCounter - a.avgCounter
   );
-
-  if (loading) {
-    return (
-      <div className="space-y-6">
-        <h1 className="text-2xl font-bold">Analytique</h1>
-        <p className="text-muted-foreground">Chargement...</p>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6">
@@ -318,48 +128,71 @@ export default function AnalyticsPage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <CardTitle>Comparaison par période</CardTitle>
-                <div className="flex gap-1.5">
-                  {([
-                    { key: "Heures payées", color: "#ef4444", label: "Payées" },
-                    { key: "Heures positives fin", color: "#22c55e", label: "Positives" },
-                    { key: "Heures manquantes fin", color: "#3b82f6", label: "Manquantes" },
-                  ] as const).map(({ key, color, label }) => {
-                    const active = visibleMetrics.has(key);
-                    return (
-                      <Button
-                        key={key}
-                        size="sm"
-                        variant={active ? "default" : "outline"}
-                        className="text-xs h-7 px-2.5"
-                        style={active ? { backgroundColor: color, borderColor: color } : { color, borderColor: color }}
-                        onClick={() => {
-                          setVisibleMetrics((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(key)) {
-                              if (next.size > 1) next.delete(key);
-                            } else {
-                              next.add(key);
-                            }
-                            return next;
-                          });
-                        }}
-                      >
-                        {label}
-                      </Button>
-                    );
-                  })}
+                <div className="flex items-center gap-3">
+                  <div className="flex rounded-md border overflow-hidden">
+                    <Button
+                      size="sm"
+                      variant={comparisonMode === "sum" ? "default" : "ghost"}
+                      className="text-xs h-7 px-3 rounded-none"
+                      onClick={() => setComparisonMode("sum")}
+                    >
+                      Somme
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={comparisonMode === "avg" ? "default" : "ghost"}
+                      className="text-xs h-7 px-3 rounded-none"
+                      onClick={() => setComparisonMode("avg")}
+                    >
+                      Moy/conducteur
+                    </Button>
+                  </div>
+                  <div className="flex gap-1.5">
+                    {([
+                      { key: "Heures payées", color: "#ef4444", label: "Payées" },
+                      { key: "Heures positives fin", color: "#22c55e", label: "Positives" },
+                      { key: "Heures manquantes fin", color: "#3b82f6", label: "Manquantes" },
+                    ] as const).map(({ key, color, label }) => {
+                      const active = visibleMetrics.has(key);
+                      return (
+                        <Button
+                          key={key}
+                          size="sm"
+                          variant={active ? "default" : "outline"}
+                          className="text-xs h-7 px-2.5"
+                          style={active ? { backgroundColor: color, borderColor: color } : { color, borderColor: color }}
+                          onClick={() => {
+                            setVisibleMetrics((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(key)) {
+                                if (next.size > 1) next.delete(key);
+                              } else {
+                                next.add(key);
+                              }
+                              return next;
+                            });
+                          }}
+                        >
+                          {label}
+                        </Button>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             </CardHeader>
             <CardContent>
               <ResponsiveContainer width="100%" height={350}>
                 <BarChart
-                  data={periodComparison.map((p) => ({
-                    name: p.periodLabel,
-                    "Heures payées": Number(p.totalOvertimePay.toFixed(2)),
-                    "Heures positives fin": Number(p.totalPositiveEnd.toFixed(2)),
-                    "Heures manquantes fin": Number(p.totalMissingEnd.toFixed(2)),
-                  }))}
+                  data={periodComparison.map((p) => {
+                    const divisor = comparisonMode === "avg" && p.totalDrivers > 0 ? p.totalDrivers : 1;
+                    return {
+                      name: p.periodLabel,
+                      "Heures payées": Number((p.totalOvertimePay / divisor).toFixed(2)),
+                      "Heures positives fin": Number((p.totalPositiveEnd / divisor).toFixed(2)),
+                      "Heures manquantes fin": Number((p.totalMissingEnd / divisor).toFixed(2)),
+                    };
+                  })}
                   margin={{ top: 5, right: 20, bottom: 5, left: 0 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
@@ -446,7 +279,9 @@ export default function AnalyticsPage() {
         <Card>
           <CardHeader>
             <CardTitle>Distribution des compteurs</CardTitle>
-            <p className="text-xs text-muted-foreground">Cliquez sur une barre pour voir le détail</p>
+            <p className="text-xs text-muted-foreground">
+              Moyenne par conducteur sur les périodes sélectionnées — Cliquez sur une barre pour voir le détail
+            </p>
           </CardHeader>
           <CardContent>
             {distribution.length === 0 ? (
@@ -549,7 +384,7 @@ export default function AnalyticsPage() {
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7"
-                  onClick={() => { setSelectedBucket(null); setBucketDrivers([]); }}
+                  onClick={() => setSelectedBucket(null)}
                 >
                   <X className="h-3.5 w-3.5" />
                 </Button>
@@ -557,9 +392,7 @@ export default function AnalyticsPage() {
             </div>
           </CardHeader>
           <CardContent>
-            {bucketLoading ? (
-              <p className="py-4 text-center text-muted-foreground">Chargement...</p>
-            ) : sortedBucketDrivers.length === 0 ? (
+            {sortedBucketDrivers.length === 0 ? (
               <p className="py-4 text-center text-muted-foreground">Aucun conducteur</p>
             ) : (
               <div className="max-h-96 overflow-y-auto">
@@ -573,7 +406,7 @@ export default function AnalyticsPage() {
                           className="inline-flex items-center gap-1 hover:text-foreground"
                           onClick={() => setBucketSortAsc((prev) => !prev)}
                         >
-                          Compteur
+                          Compteur moy.
                           <ArrowUpDown className="h-3 w-3" />
                         </button>
                       </TableHead>
@@ -594,14 +427,14 @@ export default function AnalyticsPage() {
                         <TableCell className="text-right font-mono font-medium">
                           <span
                             className={
-                              d.latestCounter > 10
+                              d.avgCounter > 10
                                 ? "text-red-600"
-                                : d.latestCounter < 0
+                                : d.avgCounter < 0
                                 ? "text-blue-600"
                                 : "text-emerald-600"
                             }
                           >
-                            {d.latestCounter.toFixed(2)}h
+                            {d.avgCounter.toFixed(2)}h
                           </span>
                         </TableCell>
                       </TableRow>
