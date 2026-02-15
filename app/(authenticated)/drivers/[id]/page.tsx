@@ -7,8 +7,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Button } from "@/components/ui/button";
 import { DriverStatusBadge } from "@/components/drivers/driver-status-badge";
 import { CounterEvolutionChart } from "@/components/driver-detail/counter-evolution-chart";
+import { PeriodComparisonChart } from "@/components/driver-detail/period-comparison-chart";
+import { BackButton } from "@/components/driver-detail/back-button";
 import { FRENCH_MONTHS } from "@/lib/constants";
-import { ArrowLeft } from "lucide-react";
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -59,6 +60,26 @@ export default async function DriverDetailPage({ params, searchParams }: Props) 
     .order("year")
     .order("month");
 
+  // Fetch driver_period_summary for all periods (for the comparison chart)
+  const { data: periodSummaries } = await supabase
+    .from("driver_period_summary")
+    .select("period_id, total_overtime_pay, latest_counter, total_positive_hours, total_missing_hours")
+    .eq("driver_id", id);
+
+  const periodComparisonData = (periods || [])
+    .filter((p) => periodSummaries?.some((s) => s.period_id === p.id))
+    .sort((a, b) => a.year - b.year || a.period_number - b.period_number)
+    .map((p) => {
+      const summary = periodSummaries?.find((s) => s.period_id === p.id);
+      const counter = Number(summary?.latest_counter || 0);
+      return {
+        periodLabel: p.label,
+        overtimePay: Number(summary?.total_overtime_pay || 0),
+        positiveEnd: counter > 0 ? counter : 0,
+        missingEnd: counter < 0 ? counter : 0,
+      };
+    });
+
   const currentPeriod = periods?.find((p) => p.id === periodId);
   const bufferHours = records?.[0]?.buffer_hours ? Number(records[0].buffer_hours) : 17;
   const latestCounter = records?.length
@@ -70,11 +91,7 @@ export default async function DriverDetailPage({ params, searchParams }: Props) 
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-start gap-4">
-        <Button variant="ghost" size="icon" asChild>
-          <Link href="/drivers">
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-        </Button>
+        <BackButton />
         <div className="flex-1">
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold">{driver.code_salarie}</h1>
@@ -130,6 +147,9 @@ export default async function DriverDetailPage({ params, searchParams }: Props) 
           </CardContent>
         </Card>
       </div>
+
+      {/* Period comparison chart */}
+      <PeriodComparisonChart data={periodComparisonData} />
 
       {/* Chart */}
       <CounterEvolutionChart

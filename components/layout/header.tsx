@@ -37,6 +37,7 @@ export function Header() {
 
   const vehicleType = searchParams.get("vehicle") || "all";
 
+  const hasCleaned = useRef(false);
   useEffect(() => {
     async function fetchPeriods() {
       const supabase = createClient();
@@ -45,10 +46,27 @@ export function Header() {
         .select("*")
         .order("year", { ascending: false })
         .order("period_number", { ascending: false });
-      if (data) setPeriods(data);
+      if (data) {
+        setPeriods(data);
+        // Clean up stale period IDs from URL
+        if (!hasCleaned.current && selectedPeriodIds.length > 0) {
+          hasCleaned.current = true;
+          const validIds = new Set(data.map((p) => p.id));
+          const cleaned = selectedPeriodIds.filter((id) => validIds.has(id));
+          if (cleaned.length !== selectedPeriodIds.length) {
+            const params = new URLSearchParams(searchParams.toString());
+            if (cleaned.length === 0 || cleaned.length === data.length) {
+              params.delete("period");
+            } else {
+              params.set("period", cleaned.join(","));
+            }
+            router.replace(`${pathname}?${params.toString()}`);
+          }
+        }
+      }
     }
     fetchPeriods();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updateParams = useCallback(
     (key: string, value: string) => {

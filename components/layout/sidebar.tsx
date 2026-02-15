@@ -15,10 +15,10 @@ import {
 
 const navItems = [
   { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard },
-  { href: "/import", label: "Importation", icon: Upload },
+  { href: "/analytics", label: "Analytique", icon: BarChart3 },
   { href: "/drivers", label: "Conducteurs", icon: Users },
   { href: "/comparison", label: "Comparaison", icon: GitCompareArrows },
-  { href: "/analytics", label: "Analytique", icon: BarChart3 },
+  { href: "/import", label: "Importation", icon: Upload },
   { href: "/settings", label: "Paramètres", icon: Settings },
 ];
 

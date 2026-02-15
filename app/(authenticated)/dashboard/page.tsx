@@ -11,15 +11,18 @@ export default async function DashboardPage({ searchParams }: Props) {
   const params = await searchParams;
   const supabase = await createClient();
 
-  // Parse period IDs (comma-separated) or fetch all
+  // Parse period IDs (comma-separated) or fetch all, validating against DB
+  const { data: allPeriods } = await supabase
+    .from("reference_periods")
+    .select("id");
+  const allPeriodIds = new Set(allPeriods?.map((p) => p.id) || []);
+
   let periodIds: string[] = [];
   if (params.period) {
-    periodIds = params.period.split(",");
-  } else {
-    const { data: allPeriods } = await supabase
-      .from("reference_periods")
-      .select("id");
-    periodIds = allPeriods?.map((p) => p.id) || [];
+    periodIds = params.period.split(",").filter((id) => allPeriodIds.has(id));
+  }
+  if (periodIds.length === 0) {
+    periodIds = [...allPeriodIds];
   }
 
   if (periodIds.length === 0) {

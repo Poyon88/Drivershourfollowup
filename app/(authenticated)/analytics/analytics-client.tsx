@@ -64,7 +64,8 @@ interface AnalyticsClientProps {
   distribution: { bucket: string; count: number }[];
   driverAverages: DriverAverage[];
   criticalDriverIds: string[];
-  monthlyAvg: { name: string; moyenne: number }[];
+  monthlyAvg: { name: string; moyenne: number; heuresPayees: number; heuresManquantes: number }[];
+  monthlyHours: { name: string; heuresPositives: number; heuresNegatives: number; driverCount: number }[];
   periodComparison: PeriodComparison[];
   statusBreakdown: { name: string; value: number; fill: string }[];
 }
@@ -74,12 +75,20 @@ export default function AnalyticsClient({
   driverAverages,
   criticalDriverIds,
   monthlyAvg,
+  monthlyHours,
   periodComparison,
   statusBreakdown,
 }: AnalyticsClientProps) {
   const [visibleMetrics, setVisibleMetrics] = useState<Set<string>>(
     new Set(["Heures payées", "Heures positives fin", "Heures manquantes fin"])
   );
+  const [visibleLines, setVisibleLines] = useState<Set<string>>(
+    new Set(["Heures payées", "Heures manquantes"])
+  );
+  const [visibleHoursLines, setVisibleHoursLines] = useState<Set<string>>(
+    new Set(["Heures positives", "Heures négatives"])
+  );
+  const [hoursMode, setHoursMode] = useState<"sum" | "avg">("sum");
   const [comparisonMode, setComparisonMode] = useState<"sum" | "avg">("sum");
 
   // Bucket drill-down state
@@ -586,7 +595,39 @@ export default function AnalyticsClient({
       {/* Monthly evolution */}
       <Card>
         <CardHeader>
-          <CardTitle>Évolution moyenne mensuelle des compteurs</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>Évaluation mensuelle des heures</CardTitle>
+            <div className="flex gap-1.5">
+              {([
+                { key: "Heures payées", color: "#ef4444", label: "Payées" },
+                { key: "Heures manquantes", color: "#3b82f6", label: "Manquantes" },
+              ] as const).map(({ key, color, label }) => {
+                const active = visibleLines.has(key);
+                return (
+                  <Button
+                    key={key}
+                    size="sm"
+                    variant={active ? "default" : "outline"}
+                    className="text-xs h-7 px-2.5"
+                    style={active ? { backgroundColor: color, borderColor: color } : { color, borderColor: color }}
+                    onClick={() => {
+                      setVisibleLines((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(key)) {
+                          if (next.size > 1) next.delete(key);
+                        } else {
+                          next.add(key);
+                        }
+                        return next;
+                      });
+                    }}
+                  >
+                    {label}
+                  </Button>
+                );
+              })}
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           {monthlyAvg.length === 0 ? (
@@ -595,23 +636,143 @@ export default function AnalyticsClient({
             <ResponsiveContainer width="100%" height={350}>
               <LineChart data={monthlyAvg} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                <XAxis dataKey="name" fontSize={12} />
+                <XAxis dataKey="name" fontSize={11} interval={0} angle={-45} textAnchor="end" height={60} />
                 <YAxis fontSize={12} />
                 <Tooltip
-                  formatter={(value) => [`${Number(value).toFixed(2)}h`, "Moyenne compteur"]}
+                  formatter={(value, name) => [`${Number(value).toFixed(2)}h`, name]}
                   contentStyle={{
                     borderRadius: "8px",
                     border: "1px solid hsl(var(--border))",
                   }}
                 />
-                <Line
-                  type="monotone"
-                  dataKey="moyenne"
-                  name="Moyenne compteur"
-                  stroke="#3b82f6"
-                  strokeWidth={2}
-                  dot={{ r: 4 }}
+                <Legend />
+                {visibleLines.has("Heures payées") && (
+                  <Line
+                    type="monotone"
+                    dataKey="heuresPayees"
+                    name="Heures payées"
+                    stroke="#ef4444"
+                    strokeWidth={2}
+                    dot={{ r: 4 }}
+                  />
+                )}
+                {visibleLines.has("Heures manquantes") && (
+                  <Line
+                    type="monotone"
+                    dataKey="heuresManquantes"
+                    name="Heures manquantes"
+                    stroke="#3b82f6"
+                    strokeWidth={2}
+                    dot={{ r: 4 }}
+                  />
+                )}
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Monthly positive/negative hours evolution */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle>Évolution mensuelle des heures positives et négatives</CardTitle>
+            <div className="flex items-center gap-3">
+              <div className="flex rounded-md border overflow-hidden">
+                <Button
+                  size="sm"
+                  variant={hoursMode === "sum" ? "default" : "ghost"}
+                  className="text-xs h-7 px-3 rounded-none"
+                  onClick={() => setHoursMode("sum")}
+                >
+                  Somme
+                </Button>
+                <Button
+                  size="sm"
+                  variant={hoursMode === "avg" ? "default" : "ghost"}
+                  className="text-xs h-7 px-3 rounded-none"
+                  onClick={() => setHoursMode("avg")}
+                >
+                  Moy/conducteur
+                </Button>
+              </div>
+            <div className="flex gap-1.5">
+              {([
+                { key: "Heures positives", color: "#22c55e", label: "Positives" },
+                { key: "Heures négatives", color: "#3b82f6", label: "Négatives" },
+              ] as const).map(({ key, color, label }) => {
+                const active = visibleHoursLines.has(key);
+                return (
+                  <Button
+                    key={key}
+                    size="sm"
+                    variant={active ? "default" : "outline"}
+                    className="text-xs h-7 px-2.5"
+                    style={active ? { backgroundColor: color, borderColor: color } : { color, borderColor: color }}
+                    onClick={() => {
+                      setVisibleHoursLines((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(key)) {
+                          if (next.size > 1) next.delete(key);
+                        } else {
+                          next.add(key);
+                        }
+                        return next;
+                      });
+                    }}
+                  >
+                    {label}
+                  </Button>
+                );
+              })}
+            </div>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {monthlyHours.length === 0 ? (
+            <p className="py-8 text-center text-muted-foreground">Aucune donnée</p>
+          ) : (
+            <ResponsiveContainer width="100%" height={350}>
+              <LineChart data={monthlyHours.map((d) => {
+                const divisor = hoursMode === "avg" && d.driverCount > 0 ? d.driverCount : 1;
+                return {
+                  name: d.name,
+                  heuresPositives: Number((d.heuresPositives / divisor).toFixed(2)),
+                  heuresNegatives: Number((d.heuresNegatives / divisor).toFixed(2)),
+                };
+              })} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="name" fontSize={11} interval={0} angle={-45} textAnchor="end" height={60} />
+                <YAxis fontSize={12} />
+                <Tooltip
+                  formatter={(value, name) => [`${Number(value).toFixed(2)}h`, name]}
+                  contentStyle={{
+                    borderRadius: "8px",
+                    border: "1px solid hsl(var(--border))",
+                  }}
                 />
+                <Legend />
+                {visibleHoursLines.has("Heures positives") && (
+                  <Line
+                    type="monotone"
+                    dataKey="heuresPositives"
+                    name="Heures positives"
+                    stroke="#22c55e"
+                    strokeWidth={2}
+                    dot={{ r: 4 }}
+                  />
+                )}
+                {visibleHoursLines.has("Heures négatives") && (
+                  <Line
+                    type="monotone"
+                    dataKey="heuresNegatives"
+                    name="Heures négatives"
+                    stroke="#3b82f6"
+                    strokeWidth={2}
+                    dot={{ r: 4 }}
+                  />
+                )}
               </LineChart>
             </ResponsiveContainer>
           )}
