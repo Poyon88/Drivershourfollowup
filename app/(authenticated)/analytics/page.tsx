@@ -216,7 +216,7 @@ export default async function AnalyticsPage({ searchParams }: Props) {
   let monthlyAvg: { name: string; moyenne: number; heuresPayees: number; heuresManquantes: number }[] = [];
   let monthlyHours: { name: string; heuresPositives: number; heuresNegatives: number; driverCount: number }[] = [];
   if (monthlyData.length > 0) {
-    const PERIOD_END_MONTHS = new Set(PERIODS.map((p) => p.endMonth));
+    const PERIOD_END_MONTHS = new Set<number>(PERIODS.map((p) => p.endMonth));
     const grouped = new Map<string, { counters: number[]; overtimePays: number[]; missingHours: number[]; positiveHours: number[] }>();
     monthlyData.forEach((r) => {
       const key = `${r.year}-${String(r.month).padStart(2, "0")}`;
