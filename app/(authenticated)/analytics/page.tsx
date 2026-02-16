@@ -7,6 +7,23 @@ interface Props {
   searchParams: Promise<{ period?: string; vehicle?: string }>;
 }
 
+// Helper: paginated fetch to work around Supabase 1000-row default cap
+async function fetchAllPages<T>(
+  queryFn: (from: number, to: number) => Promise<{ data: T[] | null }>,
+  pageSize = 1000
+): Promise<T[]> {
+  const results: T[] = [];
+  let from = 0;
+  while (true) {
+    const { data } = await queryFn(from, from + pageSize - 1);
+    if (!data || data.length === 0) break;
+    results.push(...data);
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return results;
+}
+
 export default async function AnalyticsPage({ searchParams }: Props) {
   const params = await searchParams;
   const supabase = await createClient();
@@ -19,7 +36,6 @@ export default async function AnalyticsPage({ searchParams }: Props) {
 
   let periodIds: string[] = [];
   if (params.period) {
-    // Only keep period IDs that still exist in the database
     periodIds = params.period.split(",").filter((id) => allPeriodIds.has(id));
   }
   if (periodIds.length === 0) {
@@ -50,31 +66,41 @@ export default async function AnalyticsPage({ searchParams }: Props) {
       ? params.vehicle
       : null;
 
-  // 1. Counter distribution (average per driver across selected periods, paginated)
-  const distData: { driver_id: string; code_salarie: string; vehicle_type: string; latest_counter: number; total_overtime_pay: number }[] = [];
-  {
-    const PAGE_SIZE = 1000;
-    let from = 0;
-    while (true) {
-      let q = supabase
-        .from("driver_period_summary")
-        .select("driver_id, code_salarie, vehicle_type, latest_counter, total_overtime_pay")
-        .in("period_id", periodIds)
-        .range(from, from + PAGE_SIZE - 1);
-
-      if (vehicleType) {
-        q = q.eq("vehicle_type", vehicleType);
+  // Run all independent data fetches in parallel
+  const [distData, monthlyData, selectedPeriods, comparisonRaw] = await Promise.all([
+    // 1. Counter distribution
+    fetchAllPages<{ driver_id: string; code_salarie: string; vehicle_type: string; latest_counter: number; total_overtime_pay: number }>(
+      (from, to) => {
+        let q = supabase
+          .from("driver_period_summary")
+          .select("driver_id, code_salarie, vehicle_type, latest_counter, total_overtime_pay")
+          .in("period_id", periodIds)
+          .range(from, to);
+        if (vehicleType) q = q.eq("vehicle_type", vehicleType);
+        return q;
       }
+    ),
+    // 2. Monthly records (aggregated server-side via RPC)
+    supabase.rpc("get_monthly_aggregation", {
+      p_period_ids: periodIds,
+      p_vehicle_type: vehicleType,
+    }).then((r) => r.data as { month: number; year: number; sum_counter_end: number; sum_overtime_pay: number; sum_missing_hours: number; sum_positive_hours: number; count_drivers: number }[] | null),
+    // 3. Selected periods for month slots
+    supabase
+      .from("reference_periods")
+      .select("year, period_number")
+      .in("id", periodIds)
+      .order("year")
+      .order("period_number")
+      .then((r) => r.data),
+    // 4. Period comparison RPC
+    supabase.rpc("get_period_comparison", {
+      p_period_ids: periodIds,
+      p_vehicle_type: vehicleType,
+    }).then((r) => r.data),
+  ]);
 
-      const { data } = await q;
-      if (!data || data.length === 0) break;
-      distData.push(...data);
-      if (data.length < PAGE_SIZE) break;
-      from += PAGE_SIZE;
-    }
-  }
-
-  // Group by driver and compute aggregates
+  // === Process distData: group by driver and compute aggregates ===
   const driverAvgMap = new Map<
     string,
     {
@@ -132,7 +158,6 @@ export default async function AnalyticsPage({ searchParams }: Props) {
     return "> 15h";
   }
 
-  // Build per-driver averages and distribution buckets
   const driverAverages: {
     driverId: string;
     codeSalarie: string;
@@ -163,43 +188,7 @@ export default async function AnalyticsPage({ searchParams }: Props) {
     .map((bucket) => ({ bucket, count: bucketCounts.get(bucket) || 0 }))
     .filter((d) => d.count > 0);
 
-  // 2. Monthly average evolution (paginated to avoid Supabase 1000-row default cap)
-  const monthlyData: { month: number; year: number; counter_end: number; overtime_pay: number; missing_hours: number; positive_hours: number; driver_id: string }[] = [];
-  {
-    const PAGE_SIZE = 1000;
-    let from = 0;
-    while (true) {
-      let q = supabase
-        .from("monthly_records")
-        .select(
-          "month, year, counter_end, overtime_pay, missing_hours, positive_hours, driver_id, drivers!inner(vehicle_type)"
-        )
-        .in("period_id", periodIds)
-        .order("year")
-        .order("month")
-        .range(from, from + PAGE_SIZE - 1);
-
-      if (vehicleType) {
-        q = q.eq("drivers.vehicle_type", vehicleType);
-      }
-
-      const { data } = await q;
-      if (!data || data.length === 0) break;
-      monthlyData.push(...data);
-      if (data.length < PAGE_SIZE) break;
-      from += PAGE_SIZE;
-    }
-  }
-
-  // Fetch selected periods to know which months to display
-  const { data: selectedPeriods } = await supabase
-    .from("reference_periods")
-    .select("year, period_number")
-    .in("id", periodIds)
-    .order("year")
-    .order("period_number");
-
-  // Build the full list of year-month slots for selected periods
+  // === Process monthlyData: build month slots and aggregate ===
   const allMonthSlots: { year: number; month: number; key: string }[] = [];
   for (const sp of selectedPeriods || []) {
     const periodDef = PERIODS.find((p) => p.number === sp.period_number);
@@ -213,79 +202,49 @@ export default async function AnalyticsPage({ searchParams }: Props) {
   }
   allMonthSlots.sort((a, b) => a.key.localeCompare(b.key));
 
-  let monthlyAvg: { name: string; moyenne: number; heuresPayees: number; heuresManquantes: number }[] = [];
-  let monthlyHours: { name: string; heuresPositives: number; heuresNegatives: number; driverCount: number }[] = [];
-  if (monthlyData.length > 0) {
-    const PERIOD_END_MONTHS = new Set<number>(PERIODS.map((p) => p.endMonth));
-    const grouped = new Map<string, { counters: number[]; overtimePays: number[]; missingHours: number[]; positiveHours: number[] }>();
-    monthlyData.forEach((r) => {
-      const key = `${r.year}-${String(r.month).padStart(2, "0")}`;
-      if (!grouped.has(key)) grouped.set(key, { counters: [], overtimePays: [], missingHours: [], positiveHours: [] });
-      const entry = grouped.get(key)!;
-      entry.counters.push(Number(r.counter_end));
-      entry.overtimePays.push(Number(r.overtime_pay));
-      entry.missingHours.push(Number(r.missing_hours));
-      entry.positiveHours.push(Number(r.positive_hours));
+  // Index RPC results by year-month key
+  const PERIOD_END_MONTHS = new Set<number>(PERIODS.map((p) => p.endMonth));
+  const monthlyMap = new Map<string, { sumCounterEnd: number; sumOvertimePay: number; sumMissingHours: number; sumPositiveHours: number; countDrivers: number }>();
+  (monthlyData || []).forEach((r) => {
+    const key = `${r.year}-${String(r.month).padStart(2, "0")}`;
+    monthlyMap.set(key, {
+      sumCounterEnd: Number(r.sum_counter_end),
+      sumOvertimePay: Number(r.sum_overtime_pay),
+      sumMissingHours: Number(r.sum_missing_hours),
+      sumPositiveHours: Number(r.sum_positive_hours),
+      countDrivers: Number(r.count_drivers),
     });
-
-    monthlyAvg = allMonthSlots.map(({ month, year, key }) => {
-      const data = grouped.get(key);
-      const totalOvertimePay = data ? data.overtimePays.reduce((a, b) => a + b, 0) : 0;
-      const totalMissingHours = data ? data.missingHours.reduce((a, b) => a + b, 0) : 0;
-      const isPeriodEnd = PERIOD_END_MONTHS.has(month);
-      // For period-end months (Apr, Aug, Dec), add positive counters to paid hours
-      const positiveCounters = (data && isPeriodEnd)
-        ? data.counters.filter((c) => c > 0).reduce((a, b) => a + b, 0)
-        : 0;
-      // For period-end months, add absolute value of negative counters to missing hours
-      const negativeCounters = (data && isPeriodEnd)
-        ? data.counters.filter((c) => c < 0).reduce((a, b) => a + Math.abs(b), 0)
-        : 0;
-      return {
-        name: `${FRENCH_MONTHS_SHORT[month]} ${year}`,
-        moyenne: data ? data.counters.reduce((a, b) => a + b, 0) / data.counters.length : 0,
-        heuresPayees: totalOvertimePay + positiveCounters,
-        heuresManquantes: totalMissingHours + negativeCounters,
-      };
-    });
-    // Cap per-driver monthly values to filter out corrupted data (e.g. dates parsed as hours)
-    const MAX_MONTHLY_HOURS = 200;
-    monthlyHours = allMonthSlots.map(({ month, year, key }) => {
-      const data = grouped.get(key);
-      const heuresPositives = data
-        ? data.positiveHours.filter((v) => v <= MAX_MONTHLY_HOURS).reduce((a, b) => a + b, 0)
-        : 0;
-      const heuresNegatives = data
-        ? data.missingHours.filter((v) => v <= MAX_MONTHLY_HOURS).reduce((a, b) => a + b, 0)
-        : 0;
-      return {
-        name: `${FRENCH_MONTHS_SHORT[month]} ${year}`,
-        heuresPositives,
-        heuresNegatives,
-        driverCount: data?.positiveHours.length || 0,
-      };
-    });
-  } else {
-    monthlyAvg = allMonthSlots.map(({ month, year }) => ({
-      name: `${FRENCH_MONTHS_SHORT[month]} ${year}`,
-      moyenne: 0,
-      heuresPayees: 0,
-      heuresManquantes: 0,
-    }));
-    monthlyHours = allMonthSlots.map(({ month, year }) => ({
-      name: `${FRENCH_MONTHS_SHORT[month]} ${year}`,
-      heuresPositives: 0,
-      heuresNegatives: 0,
-      driverCount: 0,
-    }));
-  }
-
-  // 3. Period comparison (server-side aggregation via RPC)
-  const { data: comparisonRaw } = await supabase.rpc("get_period_comparison", {
-    p_period_ids: periodIds,
-    p_vehicle_type: vehicleType,
   });
 
+  const monthlyAvg = allMonthSlots.map(({ month, year, key }) => {
+    const data = monthlyMap.get(key);
+    const totalOvertimePay = data?.sumOvertimePay || 0;
+    const totalMissingHours = data?.sumMissingHours || 0;
+    const sumCounterEnd = data?.sumCounterEnd || 0;
+    const countDrivers = data?.countDrivers || 0;
+    const isPeriodEnd = PERIOD_END_MONTHS.has(month);
+    // For period-end months, positive/negative counters are approximated from the sum
+    const positiveCounters = isPeriodEnd ? Math.max(0, sumCounterEnd) : 0;
+    const negativeCounters = isPeriodEnd ? Math.abs(Math.min(0, sumCounterEnd)) : 0;
+    return {
+      name: `${FRENCH_MONTHS_SHORT[month]} ${year}`,
+      moyenne: countDrivers > 0 ? sumCounterEnd / countDrivers : 0,
+      heuresPayees: totalOvertimePay + positiveCounters,
+      heuresManquantes: totalMissingHours + negativeCounters,
+    };
+  });
+
+  const monthlyHours = allMonthSlots.map(({ month, year, key }) => {
+    const data = monthlyMap.get(key);
+    return {
+      name: `${FRENCH_MONTHS_SHORT[month]} ${year}`,
+      heuresPositives: data?.sumPositiveHours || 0,
+      heuresNegatives: data?.sumMissingHours || 0,
+      driverCount: data?.countDrivers || 0,
+    };
+  });
+
+  // === Process period comparison ===
   const periodComparison = (comparisonRaw || []).map(
     (d: Record<string, unknown>) => ({
       periodId: String(d.period_id),
@@ -301,11 +260,10 @@ export default async function AnalyticsPage({ searchParams }: Props) {
     })
   );
 
-  // 4. Status breakdown based on 10% extremes
+  // === Status breakdown based on 10% extremes ===
   const totalDriverCount = driverAverages.length;
   const topN = Math.max(1, Math.ceil(totalDriverCount * 0.1));
 
-  // Top 10% most missing hours (most negative totalMissing)
   const sortedByMissing = [...driverAverages]
     .filter((d) => d.totalMissing < 0)
     .sort((a, b) => a.totalMissing - b.totalMissing);
@@ -313,7 +271,6 @@ export default async function AnalyticsPage({ searchParams }: Props) {
     sortedByMissing.slice(0, topN).map((d) => d.driverId)
   );
 
-  // Top 10% highest excess (overtime_pay + positive counter)
   const sortedByExcess = [...driverAverages]
     .filter((d) => d.totalExcess > 0)
     .sort((a, b) => b.totalExcess - a.totalExcess);

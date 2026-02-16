@@ -56,20 +56,38 @@ export default async function DashboardPage({ searchParams }: Props) {
     p_vehicle_type: vehicleType,
   });
 
-  // Fetch drivers with overtime pay
+  // Fetch drivers with overtime pay (aggregate across selected periods)
   let overtimeQuery = supabase
     .from("driver_period_summary")
     .select("driver_id, code_salarie, vehicle_type, total_overtime_pay, latest_counter")
     .in("period_id", periodIds)
-    .gt("total_overtime_pay", 0)
-    .order("total_overtime_pay", { ascending: false })
-    .limit(20);
+    .gt("total_overtime_pay", 0);
 
   if (vehicleType) {
     overtimeQuery = overtimeQuery.eq("vehicle_type", vehicleType);
   }
 
-  const { data: overtimeDrivers } = await overtimeQuery;
+  const { data: rawOvertimeDrivers } = await overtimeQuery;
+
+  // Group by driver and sum overtime pay
+  const overtimeMap = new Map<string, { driver_id: string; code_salarie: string; vehicle_type: string; total_overtime_pay: number; latest_counter: number }>();
+  (rawOvertimeDrivers || []).forEach((d) => {
+    const existing = overtimeMap.get(d.driver_id);
+    if (existing) {
+      existing.total_overtime_pay += Number(d.total_overtime_pay);
+    } else {
+      overtimeMap.set(d.driver_id, {
+        driver_id: d.driver_id,
+        code_salarie: d.code_salarie,
+        vehicle_type: d.vehicle_type,
+        total_overtime_pay: Number(d.total_overtime_pay),
+        latest_counter: Number(d.latest_counter),
+      });
+    }
+  });
+  const overtimeDrivers = [...overtimeMap.values()]
+    .sort((a, b) => b.total_overtime_pay - a.total_overtime_pay)
+    .slice(0, 20);
 
   const defaultStats = {
     total_drivers: 0,
