@@ -41,7 +41,7 @@ export async function importWpData(input: WpImportInput) {
 
     switch (input.fileType) {
       case "roster_rh":
-        await importRosterRH(supabase, input.data, importId);
+        await importRosterRH(supabase, input.data, importId, input.mois, input.annee);
         break;
       case "salary_stats":
         await importSalaryStats(supabase, input.data, importId);
@@ -78,17 +78,25 @@ export async function importWpData(input: WpImportInput) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function importRosterRH(supabase: any, data: Record<string, unknown>[], importId: string) {
-  // Delete previous roster data (full replace)
+async function importRosterRH(supabase: any, data: Record<string, unknown>[], importId: string, mois?: number, annee?: number) {
+  // Le roster est historisé : un import ne remplace QUE sa propre période.
+  // Sans période, on effacerait un mois au hasard — on refuse plutôt.
+  if (!mois || !annee) {
+    throw new Error("Mois et année requis pour un import de roster : chaque import est une photographie d'effectif datée.");
+  }
+
   await supabase
     .from("wp_employees")
     .delete()
-    .neq("id", "00000000-0000-0000-0000-000000000000");
+    .eq("mois", mois)
+    .eq("annee", annee);
 
   // Insert in batches of 200
   for (let i = 0; i < data.length; i += 200) {
     const batch = data.slice(i, i + 200).map((row) => ({
       ...row,
+      mois,
+      annee,
       import_id: importId,
     }));
 

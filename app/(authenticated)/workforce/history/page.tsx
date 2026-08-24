@@ -1,12 +1,18 @@
 import { createClient } from "@/lib/supabase/server";
 import { fetchAll } from "@/lib/supabase/fetch-all";
+import { getLatestRosterPeriod } from "@/lib/utils/roster-period";
 import { HistoryClient } from "./history-client";
 
 export default async function HistoryPage() {
   const supabase = await createClient();
 
+  // Roster historisé : on se cale sur la photographie d'effectif la plus récente.
+  const rosterPeriode = await getLatestRosterPeriod(supabase);
+
   const [employees, absences, salaryStats] = await Promise.all([
-    fetchAll(supabase.from("wp_employees").select("code_salarie, date_entree, date_sortie, vehicle_type, taux_occupation, est_sortie_temporaire, description_motif_sortie, description_departement")),
+    fetchAll(rosterPeriode
+      ? supabase.from("wp_employees").select("code_salarie, date_entree, date_sortie, vehicle_type, taux_occupation, est_sortie_temporaire, description_motif_sortie, description_departement").eq("mois", rosterPeriode.mois).eq("annee", rosterPeriode.annee)
+      : supabase.from("wp_employees").select("code_salarie, date_entree, date_sortie, vehicle_type, taux_occupation, est_sortie_temporaire, description_motif_sortie, description_departement").limit(0)),
     fetchAll(supabase.from("wp_absences").select("code_salarie, mois, annee, pct_absenteisme, hrs_maladie, hrs_maternite, hrs_accident, hrs_raisons_familiales, hrs_conge_accompagnement, heures_theoriques")),
     fetchAll(supabase.from("wp_salary_stats").select("code_salarie, mois, annee, etp, hrs_base, hrs_supp")),
   ]);

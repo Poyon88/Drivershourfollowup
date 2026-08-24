@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { fetchAll } from "@/lib/supabase/fetch-all";
+import { getLatestRosterPeriod } from "@/lib/utils/roster-period";
 import { notFound } from "next/navigation";
 import { ScenarioEditorClient } from "./scenario-editor-client";
 import { getDistinctEmployeeValues } from "../actions";
@@ -14,6 +15,9 @@ export default async function ScenarioEditorPage({ params, searchParams }: Props
   const { year: yearParam } = await searchParams;
   const supabase = await createClient();
   const selectedYear = yearParam ? parseInt(yearParam) : new Date().getFullYear();
+
+  // Roster historisé : on se cale sur la photographie d'effectif la plus récente.
+  const rosterPeriode = await getLatestRosterPeriod(supabase);
 
   // Fetch scenario + params + departures + arrival hypotheses (paginated for large tables)
   const [
@@ -36,7 +40,9 @@ export default async function ScenarioEditorPage({ params, searchParams }: Props
     supabase.from("wp_scenario_departures").select("*").eq("scenario_id", id).order("departure_month"),
     supabase.from("wp_scenario_arrival_hypotheses").select("*").eq("scenario_id", id).order("start_year, start_month"),
     supabase.from("wp_scenario_temp_exit_hypotheses").select("*").eq("scenario_id", id).order("departure_year, departure_month"),
-    fetchAll(supabase.from("wp_employees").select("code_salarie, date_entree, date_sortie, vehicle_type, taux_occupation, est_sortie_temporaire, description_motif_sortie, description_departement, description_equipe, description_fonction, centre_cout, description_service")),
+    fetchAll(rosterPeriode
+      ? supabase.from("wp_employees").select("code_salarie, date_entree, date_sortie, vehicle_type, taux_occupation, est_sortie_temporaire, description_motif_sortie, description_departement, description_equipe, description_fonction, centre_cout, description_service").eq("mois", rosterPeriode.mois).eq("annee", rosterPeriode.annee)
+      : supabase.from("wp_employees").select("code_salarie, date_entree, date_sortie, vehicle_type, taux_occupation, est_sortie_temporaire, description_motif_sortie, description_departement, description_equipe, description_fonction, centre_cout, description_service").limit(0)),
     fetchAll(supabase.from("wp_absences").select("code_salarie, mois, annee, pct_absenteisme, hrs_maladie, hrs_maternite, hrs_accident, heures_theoriques")),
     fetchAll(supabase.from("wp_target_needs").select("target_headcount")),
     getDistinctEmployeeValues(),

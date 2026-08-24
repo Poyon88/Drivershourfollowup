@@ -78,6 +78,9 @@ export default function WorkforceImportPage() {
   const [overrideYear, setOverrideYear] = useState<number>(new Date().getFullYear());
   const [overrideMonth, setOverrideMonth] = useState<number>(0);
 
+  // Types dont l'import est rattaché à une période.
+  const TYPES_AVEC_PERIODE: (WpFileType | null)[] = ["roster_rh", "salary_stats", "absences_cns", "absences_mct"];
+
   useEffect(() => {
     getWpImportHistory().then((data) => setImportHistory(data as ImportHistoryItem[]));
   }, [stage]);
@@ -109,6 +112,22 @@ export default function WorkforceImportPage() {
 
       if (result.detectedYear) setOverrideYear(result.detectedYear);
       if (result.detectedMonth) setOverrideMonth(result.detectedMonth);
+
+      // Le sélecteur affichait une valeur par défaut sans jamais la poser dans
+      // l'état : si l'utilisateur n'y touchait pas, aucun mois n'était transmis.
+      // On garantit donc un mois réel dès l'aperçu, pour tous les types qui en
+      // exigent un. Pour le roster, dont le contenu ne porte aucune période, on
+      // la devine depuis le nom du fichier (SLA_stat_mensuelle_07.xlsx).
+      if (TYPES_AVEC_PERIODE.includes(fileType)) {
+        const depuisNom = file.name.match(/_(\d{1,2})(?:\D|$)/);
+        const moisDuNom = depuisNom ? Number(depuisNom[1]) : 0;
+        const mois =
+          result.detectedMonth ||
+          (moisDuNom >= 1 && moisDuNom <= 12 ? moisDuNom : 0) ||
+          new Date().getMonth() + 1;
+        setOverrideMonth(mois);
+        setOverrideYear(result.detectedYear || new Date().getFullYear());
+      }
 
       if (result.errors.length > 0) {
         toast.error(result.errors[0]);
@@ -286,12 +305,12 @@ export default function WorkforceImportPage() {
             </div>
 
             {/* Month/Year override for salary_stats and absences */}
-            {(selectedType === "salary_stats" || selectedType === "absences_cns" || selectedType === "absences_mct") && (
+            {TYPES_AVEC_PERIODE.includes(selectedType) && (
               <div className="flex items-end gap-4">
                 <div className="space-y-1">
                   <Label className="text-xs">Mois</Label>
                   <Select
-                    value={String(overrideMonth || parseResult.detectedMonth || 1)}
+                    value={String(overrideMonth || 1)}
                     onValueChange={(v) => setOverrideMonth(Number(v))}
                   >
                     <SelectTrigger className="w-[150px] h-8 text-sm">
