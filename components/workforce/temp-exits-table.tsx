@@ -15,6 +15,7 @@ import { PauseCircle, ChevronRight, ChevronDown } from "lucide-react";
 
 export interface TempExitItem {
   code_salarie: string;
+  nom_salarie?: string | null;
   vehicle_type: string;
   description_equipe: string;
   date_debut: string;
@@ -87,7 +88,16 @@ function EmployeeRows({ items }: { items: TempExitItem[] }) {
     <>
       {items.map((d, i) => (
         <TableRow key={`${d.code_salarie}-${i}`}>
-          <TableCell className="text-sm font-medium pl-12">{d.code_salarie}</TableCell>
+          <TableCell className="text-sm font-medium pl-12">
+            {d.nom_salarie ? (
+              <div className="flex flex-col leading-tight">
+                <span>{d.nom_salarie}</span>
+                <span className="text-xs font-normal text-muted-foreground">{d.code_salarie}</span>
+              </div>
+            ) : (
+              d.code_salarie
+            )}
+          </TableCell>
           <TableCell>
             <Badge variant="outline" className="text-xs">{d.vehicle_type}</Badge>
           </TableCell>
@@ -164,7 +174,7 @@ export function TempExitsTable({ items }: { items: TempExitItem[] }) {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="text-xs">Code salarié</TableHead>
+                  <TableHead className="text-xs">Salarié</TableHead>
                   <TableHead className="text-xs">Type</TableHead>
                   <TableHead className="text-xs">Équipe</TableHead>
                   <TableHead className="text-xs">Début</TableHead>
