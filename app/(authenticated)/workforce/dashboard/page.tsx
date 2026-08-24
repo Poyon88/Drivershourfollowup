@@ -1,11 +1,13 @@
 import { createClient } from "@/lib/supabase/server";
 import { fetchAll } from "@/lib/supabase/fetch-all";
+import { resolveRosterPeriod } from "@/lib/utils/roster-period";
 import { WpKpiCards, type WpDashboardStats } from "@/components/workforce/kpi-cards";
 import { HeadcountEvolutionChart, type HeadcountDataPoint, type ScenarioOption, type ScenarioProjectionData } from "@/components/workforce/headcount-evolution-chart";
 import { getArrivalsForMonth, getCddDeparturesForMonth, getWorkableHoursInMonth, lastDayOfMonth, isTempExitAt, getTempExitDeparturesForMonth, getTempExitReturnsForMonth, type ArrivalHypothesis, type TempExitHypothesis } from "@/lib/utils/wp-calculations";
 import { DepartureTable, type DepartureItem } from "@/components/workforce/departure-table";
 import { ArrivalTable, type ArrivalItem } from "@/components/workforce/arrival-table";
 import { TempExitsTable, type TempExitItem } from "@/components/workforce/temp-exits-table";
+import { HeadcountTable, type HeadcountItem } from "@/components/workforce/headcount-table";
 import { GapAnalysisChart, type GapDataPoint } from "@/components/workforce/gap-analysis-chart";
 import { AbsenteeismTable, type AbsenteeismItem } from "@/components/workforce/absenteeism-table";
 import { MctTable, type MctItem } from "@/components/workforce/mct-table";
@@ -77,9 +79,20 @@ export default async function WorkforceDashboardPage({ searchParams }: Props) {
     );
   }
 
+  // Roster historisé : on ne lit QUE la photographie du mois affiché, sinon
+  // chaque salarié serait compté une fois par mois présent en base.
+  const { periode: rosterPeriode, exacte: rosterPeriodeExacte } =
+    await resolveRosterPeriod(supabase, selectedMonth, selectedYear);
+
   // Fetch all data in parallel (paginated to avoid 1000-row limit)
   const [employees, absences, salaryStats, absencesMct, absencesInjustifiees, targets, defaultScenarios, allScenariosRaw] = await Promise.all([
-    fetchAll(supabase.from("wp_employees").select("*")),
+    fetchAll(
+      supabase
+        .from("wp_employees")
+        .select("*")
+        .eq("mois", rosterPeriode?.mois ?? -1)
+        .eq("annee", rosterPeriode?.annee ?? -1)
+    ),
     fetchAll(supabase.from("wp_absences").select("*").eq("annee", selectedYear)),
     fetchAll(supabase.from("wp_salary_stats").select("*").eq("annee", selectedYear)),
     fetchAll(supabase.from("wp_absences_mct").select("*").eq("annee", selectedYear)),
@@ -232,6 +245,20 @@ export default async function WorkforceDashboardPage({ searchParams }: Props) {
   const sortiesTempEtp = sortiesTemp.reduce((sum, e) => sum + getEtp(e), 0);
   const sortiesTemporairesCount = sortiesTemp.length;
 
+  // Liste détaillée de l'effectif sous contrat (mêmes salariés que le KPI)
+  const headcountItems: HeadcountItem[] = activeEmployees
+    .slice()
+    .sort((a, b) => (a.description_equipe || "").localeCompare(b.description_equipe || ""))
+    .map((e) => ({
+      code_salarie: e.code_salarie,
+      nom_salarie: e.nom_salarie || null,
+      vehicle_type: e.vehicle_type || "?",
+      description_equipe: e.description_equipe || "",
+      type_contrat: e.type_contrat || "",
+      date_entree: e.date_entree || null,
+      etp: Math.round(getEtp(e) * 100) / 100,
+    }));
+
   // Liste détaillée des sorties temporaires actuelles
   const tempExitItems: TempExitItem[] = sortiesTemp
     .sort((a, b) =>
@@ -239,6 +266,7 @@ export default async function WorkforceDashboardPage({ searchParams }: Props) {
     )
     .map((e) => ({
       code_salarie: e.code_salarie,
+      nom_salarie: e.nom_salarie || null,
       vehicle_type: e.vehicle_type || "?",
       description_equipe: e.description_equipe || "",
       date_debut: e.date_debut_sortie_temporaire || "",
@@ -1161,6 +1189,7 @@ export default async function WorkforceDashboardPage({ searchParams }: Props) {
     .sort((a, b) => (a.date_sortie || "").localeCompare(b.date_sortie || ""))
     .map((e) => ({
       code_salarie: e.code_salarie,
+      nom_salarie: e.nom_salarie || null,
       vehicle_type: e.vehicle_type || "?",
       description_equipe: e.description_equipe || "",
       date_sortie: e.date_sortie!,
@@ -1172,9 +1201,20 @@ export default async function WorkforceDashboardPage({ searchParams }: Props) {
   // Arrivals list
   // ============================================================
 
-  // Nouveaux engagés: date_entree after refDate but within the year
+  // Nouveaux engagés : entrés PENDANT le mois affiché, ou plus tard dans l'année.
+  //
+  // La règle précédente ne retenait que les dates d'entrée POSTÉRIEURES au mois
+  // affiché. Elle avait un sens tant qu'une seule photographie d'effectif —
+  // toujours la plus récente — servait tous les mois : les recrutements des
+  // mois suivants y figuraient déjà. Depuis l'historisation, le roster de mars
+  // ne contient que l'effectif de mars, si bien que plus aucune ligne ne
+  // satisfaisait ce critère et que la catégorie restait vide.
+  //
+  // On part donc du PREMIER jour du mois. Les entrées futures déjà connues
+  // restent incluses, ce qui préserve l'intention d'origine.
+  const monthStart = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}-01`;
   const nouveauxEngages = allEmployees.filter(
-    (e) => e.date_entree && e.date_entree > refDate && e.date_entree <= yearEnd
+    (e) => e.date_entree && e.date_entree >= monthStart && e.date_entree <= yearEnd
   );
 
   // Retours de suspension: est_sortie_temporaire with date_fin_sortie_temporaire after refDate
@@ -1191,6 +1231,7 @@ export default async function WorkforceDashboardPage({ searchParams }: Props) {
       .sort((a, b) => (a.date_entree || "").localeCompare(b.date_entree || ""))
       .map((e) => ({
         code_salarie: e.code_salarie,
+        nom_salarie: e.nom_salarie || null,
         vehicle_type: e.vehicle_type || "?",
         description_equipe: e.description_equipe || "",
         date: e.date_entree!,
@@ -1203,6 +1244,7 @@ export default async function WorkforceDashboardPage({ searchParams }: Props) {
       )
       .map((e) => ({
         code_salarie: e.code_salarie,
+        nom_salarie: e.nom_salarie || null,
         vehicle_type: e.vehicle_type || "?",
         description_equipe: e.description_equipe || "",
         date: e.date_fin_sortie_temporaire!,
@@ -1234,6 +1276,15 @@ export default async function WorkforceDashboardPage({ searchParams }: Props) {
         </p>
       </div>
 
+      {!rosterPeriodeExacte && rosterPeriode && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          Aucun roster n&apos;a été importé pour {MONTH_LABELS[selectedMonth]} {selectedYear}.
+          Les effectifs, départs et arrivées ci-dessous proviennent du roster de{" "}
+          <strong>{MONTH_LABELS[rosterPeriode.mois]} {rosterPeriode.annee}</strong> et ne reflètent
+          donc pas la situation telle qu&apos;elle était connue à la période demandée.
+        </div>
+      )}
+
       <WpKpiCards stats={stats} />
 
       <HeadcountEvolutionChart
@@ -1248,6 +1299,8 @@ export default async function WorkforceDashboardPage({ searchParams }: Props) {
       />
 
       {targetTotal > 0 && <GapAnalysisChart data={gapData} />}
+
+      <HeadcountTable items={headcountItems} />
 
       <TempExitsTable items={tempExitItems} />
 
