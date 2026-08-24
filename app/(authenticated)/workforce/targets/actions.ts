@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { fetchAll } from "@/lib/supabase/fetch-all";
+import { getLatestRosterPeriod } from "@/lib/utils/roster-period";
 import { revalidatePath } from "next/cache";
 
 // ============================================================
@@ -185,9 +186,14 @@ export async function computeProjectionByDepot(input: {
   const { scenarioIds, turnoverSrcId, absSrcId, leaveSrcId, year } = input;
   if (scenarioIds.length === 0) return [];
 
+  // Roster historisé : on se cale sur la photographie d'effectif la plus récente.
+  const rosterPeriode = await getLatestRosterPeriod(supabase);
+
   // Fetch all needed data
   const [employees, absences, absencesMct, scenarioParams, scenarioTurnoverParams, scenarioLeaveParams, scenarioArrivals, scenarioDepartures, scenarioTempExits, scenarioDetails] = await Promise.all([
-    fetchAll(supabase.from("wp_employees").select("*")),
+    fetchAll(rosterPeriode
+      ? supabase.from("wp_employees").select("*").eq("mois", rosterPeriode.mois).eq("annee", rosterPeriode.annee)
+      : supabase.from("wp_employees").select("*").limit(0)),
     fetchAll(supabase.from("wp_absences").select("code_salarie, mois, annee, pct_absenteisme, hrs_maladie")),
     fetchAll(supabase.from("wp_absences_mct").select("code_salarie, mois, annee, duree_hrs")),
     fetchAll(supabase.from("wp_scenario_monthly_params").select("*").in("scenario_id", scenarioIds)),

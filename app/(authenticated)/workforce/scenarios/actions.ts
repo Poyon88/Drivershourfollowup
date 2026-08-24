@@ -1,4 +1,5 @@
 "use server";
+import { getLatestRosterPeriod } from "@/lib/utils/roster-period";
 
 import { createClient } from "@/lib/supabase/server";
 import { fetchAll } from "@/lib/supabase/fetch-all";
@@ -396,17 +397,13 @@ export async function deleteArrivalHypothesis(id: string) {
     .eq("id", id)
     .single();
 
-  console.log("[DELETE arrival] user:", user.id, "target id:", id, "found:", !!before, "scenario_id:", before?.scenario_id);
-
   if (!before) throw new Error("Hypothèse introuvable ou accès refusé");
 
-  const { error, count } = await supabase
+  const { error } = await supabase
     .from("wp_scenario_arrival_hypotheses")
     .delete()
     .eq("id", id)
     .select();
-
-  console.log("[DELETE arrival] error:", error, "count:", count);
 
   if (error) throw new Error("Erreur suppression hypothèse: " + error.message);
 
@@ -416,8 +413,6 @@ export async function deleteArrivalHypothesis(id: string) {
     .select("id")
     .eq("id", id)
     .single();
-
-  console.log("[DELETE arrival] still exists after delete:", !!after);
 
   if (after) throw new Error("La suppression a échoué silencieusement - la ligne existe toujours");
 
@@ -506,10 +501,20 @@ export async function deleteTempExitHypothesis(id: string) {
 export async function getDistinctEmployeeValues() {
   const supabase = await createClient();
 
+  // Roster historisé : on se cale sur la photographie la plus récente, sinon
+  // les listes de filtres agrègent autant de mois qu'il y en a en base.
+  const rosterPeriode = await getLatestRosterPeriod(supabase);
+  const p = rosterPeriode;
   const [{ data: fonctions }, { data: centres }, { data: depots }] = await Promise.all([
-    supabase.from("wp_employees").select("description_fonction").not("description_fonction", "is", null),
-    supabase.from("wp_employees").select("centre_cout").not("centre_cout", "is", null),
-    supabase.from("wp_employees").select("description_service").not("description_service", "is", null),
+    p
+      ? supabase.from("wp_employees").select("description_fonction").not("description_fonction", "is", null).eq("mois", p.mois).eq("annee", p.annee)
+      : supabase.from("wp_employees").select("description_fonction").limit(0),
+    p
+      ? supabase.from("wp_employees").select("centre_cout").not("centre_cout", "is", null).eq("mois", p.mois).eq("annee", p.annee)
+      : supabase.from("wp_employees").select("centre_cout").limit(0),
+    p
+      ? supabase.from("wp_employees").select("description_service").not("description_service", "is", null).eq("mois", p.mois).eq("annee", p.annee)
+      : supabase.from("wp_employees").select("description_service").limit(0),
   ]);
 
   const unique = (arr: { [key: string]: string | null }[] | null, key: string) =>

@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { fetchAll } from "@/lib/supabase/fetch-all";
+import { getLatestRosterPeriod } from "@/lib/utils/roster-period";
 import { notFound } from "next/navigation";
 import { TargetScenarioEditorClient } from "./target-scenario-editor-client";
 
@@ -11,11 +12,16 @@ export default async function TargetScenarioEditorPage({ params }: Props) {
   const { id } = await params;
   const supabase = await createClient();
 
+  // Roster historisé : on se cale sur la photographie d'effectif la plus récente.
+  const rosterPeriode = await getLatestRosterPeriod(supabase);
+
   const [{ data: scenario }, { data: values }, employees, { data: projectionScenarios }] = await Promise.all([
     supabase.from("wp_target_scenarios").select("*").eq("id", id).single(),
     supabase.from("wp_target_scenario_values").select("*").eq("scenario_id", id),
     fetchAll(
-      supabase.from("wp_employees").select("description_service, centre_cout, date_sortie, date_entree, taux_occupation, est_sortie_temporaire")
+      rosterPeriode
+        ? supabase.from("wp_employees").select("description_service, centre_cout, date_sortie, date_entree, taux_occupation, est_sortie_temporaire").eq("mois", rosterPeriode.mois).eq("annee", rosterPeriode.annee)
+        : supabase.from("wp_employees").select("description_service, centre_cout, date_sortie, date_entree, taux_occupation, est_sortie_temporaire").limit(0)
     ),
     supabase.from("wp_scenarios").select("id, name").order("name"),
   ]);

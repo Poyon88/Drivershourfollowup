@@ -11,48 +11,49 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { PauseCircle, ChevronRight, ChevronDown } from "lucide-react";
+import { Users, ChevronRight, ChevronDown } from "lucide-react";
 
-export interface TempExitItem {
+export interface HeadcountItem {
   code_salarie: string;
   nom_salarie?: string | null;
   vehicle_type: string;
   description_equipe: string;
-  date_debut: string;
-  date_fin: string | null;
-  motif: string;
+  type_contrat: string;
+  date_entree: string | null;
   etp: number;
 }
 
 // ---------------------------------------------------------------------------
 // Sous-catégories
+//
+// Les libellés bruts mêlent la nature du contrat et le poste occupé
+// (« CDI CHAUFF. BUS », « CDD CHAUF. BUS », « CDI EMP. BUREAU SLA »…). On
+// regroupe donc par NATURE, le libellé exact restant lisible sur chaque ligne.
 // ---------------------------------------------------------------------------
 
-const SUBCATEGORIES: Record<string, { label: string; color: string; match: (motif: string) => boolean }> = {
-  parental_tp: { label: "Congé parental temps partiel", color: "text-violet-600", match: (m) => m === "Conge Parental TP" },
-  parental: { label: "Congé parental", color: "text-violet-600", match: (m) => m.toLowerCase().includes("parental") && m !== "Conge Parental TP" },
-  maternite: { label: "Congé maternité", color: "text-pink-600", match: (m) => m.toLowerCase().includes("maternité") || m.toLowerCase().includes("maternite") },
-  sans_solde: { label: "Congé sans solde", color: "text-violet-600", match: (m) => m.toLowerCase().includes("sans solde") },
-  accompagnement: { label: "Congé accompagnement", color: "text-blue-600", match: (m) => m.toLowerCase().includes("accompagnement") },
-  dispense: { label: "Dispense", color: "text-gray-600", match: (m) => m.toLowerCase().includes("dispense") },
+const SUBCATEGORIES: Record<string, { label: string; color: string; match: (contrat: string) => boolean }> = {
+  cdi: { label: "CDI", color: "text-emerald-600", match: (c) => c.toUpperCase().startsWith("CDI") },
+  cdd: { label: "CDD", color: "text-amber-600", match: (c) => c.toUpperCase().startsWith("CDD") },
+  interim: { label: "Intérim", color: "text-blue-600", match: (c) => c.toLowerCase().includes("interim") || c.toLowerCase().includes("intérim") },
+  apprentissage: { label: "Apprentissage / Stage", color: "text-violet-600", match: (c) => c.toLowerCase().includes("apprenti") || c.toLowerCase().includes("stage") },
 };
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function groupBySubcategory(items: TempExitItem[]) {
-  const groups: { key: string; label: string; color: string; items: TempExitItem[]; etp: number }[] = [];
+function groupBySubcategory(items: HeadcountItem[]) {
+  const groups: { key: string; label: string; color: string; items: HeadcountItem[]; etp: number }[] = [];
   const matched = new Set<number>();
 
   for (const [key, sub] of Object.entries(SUBCATEGORIES)) {
-    const groupItems = items.filter((d, i) => {
-      if (matched.has(i)) return false;
-      return sub.match(d.motif);
-    });
-    groupItems.forEach((d) => {
-      const idx = items.indexOf(d);
-      if (idx >= 0) matched.add(idx);
+    const groupItems: HeadcountItem[] = [];
+    items.forEach((d, i) => {
+      if (matched.has(i)) return;
+      if (sub.match(d.type_contrat || "")) {
+        groupItems.push(d);
+        matched.add(i);
+      }
     });
     if (groupItems.length > 0) {
       const etp = Math.round(groupItems.reduce((sum, d) => sum + d.etp, 0) * 10) / 10;
@@ -63,7 +64,7 @@ function groupBySubcategory(items: TempExitItem[]) {
   const remaining = items.filter((_, i) => !matched.has(i));
   if (remaining.length > 0) {
     const etp = Math.round(remaining.reduce((sum, d) => sum + d.etp, 0) * 10) / 10;
-    groups.push({ key: "autre", label: "Autre", color: "text-gray-600", items: remaining, etp });
+    groups.push({ key: "autre", label: "Autre / non renseigné", color: "text-gray-600", items: remaining, etp });
   }
 
   groups.sort((a, b) => b.items.length - a.items.length);
@@ -83,7 +84,7 @@ function formatDate(date: string | null) {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function EmployeeRows({ items }: { items: TempExitItem[] }) {
+function EmployeeRows({ items }: { items: HeadcountItem[] }) {
   return (
     <>
       {items.map((d, i) => (
@@ -102,8 +103,8 @@ function EmployeeRows({ items }: { items: TempExitItem[] }) {
             <Badge variant="outline" className="text-xs">{d.vehicle_type}</Badge>
           </TableCell>
           <TableCell className="text-sm">{d.description_equipe}</TableCell>
-          <TableCell className="text-sm">{formatDate(d.date_debut)}</TableCell>
-          <TableCell className="text-sm">{formatDate(d.date_fin)}</TableCell>
+          <TableCell className="text-sm text-muted-foreground">{d.type_contrat || "—"}</TableCell>
+          <TableCell className="text-sm">{formatDate(d.date_entree)}</TableCell>
           <TableCell className="text-sm text-right">{d.etp}</TableCell>
         </TableRow>
       ))}
@@ -114,7 +115,7 @@ function EmployeeRows({ items }: { items: TempExitItem[] }) {
 function SubcategorySection({
   group,
 }: {
-  group: { key: string; label: string; color: string; items: TempExitItem[]; etp: number };
+  group: { key: string; label: string; color: string; items: HeadcountItem[]; etp: number };
 }) {
   const [open, setOpen] = useState(false);
 
@@ -152,7 +153,7 @@ function SubcategorySection({
 // Main component
 // ---------------------------------------------------------------------------
 
-export function TempExitsTable({ items }: { items: TempExitItem[] }) {
+export function HeadcountTable({ items }: { items: HeadcountItem[] }) {
   const totalEtp = Math.round(items.reduce((sum, d) => sum + d.etp, 0) * 10) / 10;
   const groups = groupBySubcategory(items);
 
@@ -160,14 +161,14 @@ export function TempExitsTable({ items }: { items: TempExitItem[] }) {
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
-          <PauseCircle className="h-4 w-4" />
-          Sorties temporaires actuelles ({items.length} pers. — {totalEtp} ETP)
+          <Users className="h-4 w-4" />
+          Détails effectif sous contrat ({items.length} pers. — {totalEtp} ETP)
         </CardTitle>
       </CardHeader>
       <CardContent>
         {items.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-4">
-            Aucune sortie temporaire en cours.
+            Aucun effectif pour cette période.
           </p>
         ) : (
           <div className="max-h-[500px] overflow-auto">
@@ -177,8 +178,8 @@ export function TempExitsTable({ items }: { items: TempExitItem[] }) {
                   <TableHead className="text-xs">Salarié</TableHead>
                   <TableHead className="text-xs">Type</TableHead>
                   <TableHead className="text-xs">Équipe</TableHead>
-                  <TableHead className="text-xs">Début</TableHead>
-                  <TableHead className="text-xs">Fin prévue</TableHead>
+                  <TableHead className="text-xs">Contrat</TableHead>
+                  <TableHead className="text-xs">Entrée</TableHead>
                   <TableHead className="text-xs text-right">ETP</TableHead>
                 </TableRow>
               </TableHeader>

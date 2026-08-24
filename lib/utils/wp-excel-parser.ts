@@ -83,6 +83,8 @@ export interface WpParseResult {
 
 export interface RosterRow {
   code_salarie: string;
+  /** Vide tant que l'export roster ne fournit pas de colonne « Nom ». */
+  nom_salarie: string;
   code_employeur: string;
   date_entree: string | null;
   date_sortie: string | null;
@@ -138,6 +140,9 @@ export function parseRosterRH(buffer: ArrayBuffer): WpParseResult {
 
   const h = header.headers;
   const colCode = findCol(h, "code", "salarie");
+  // Absente des exports actuels : le champ reste vide et l'interface se rabat
+  // sur le matricule. Se remplira dès que l'export comportera une colonne « Nom ».
+  const colNom = findCol(h, "nom");
   const colEmployeur = findCol(h, "code", "employeur");
   const colEntree = findCol(h, "date", "entree");
   const colSortie = findCol(h, "date", "sortie");
@@ -181,6 +186,7 @@ export function parseRosterRH(buffer: ArrayBuffer): WpParseResult {
 
     data.push({
       code_salarie: codeSalarie,
+      nom_salarie: colNom >= 0 ? String(row[colNom] || "").trim() : "",
       code_employeur: colEmployeur >= 0 ? String(row[colEmployeur] || "") : "",
       date_entree: dateToISO(excelDateToDate(row[colEntree >= 0 ? colEntree : -1])),
       date_sortie: dateToISO(excelDateToDate(row[colSortie >= 0 ? colSortie : -1])),
@@ -456,6 +462,34 @@ export function parseAbsencesCNS(buffer: ArrayBuffer): WpParseResult {
     return { fileType: "absences_cns", data: [], rowCount: 0, errors: ["Colonne 'Code salarié' non trouvée."], warnings };
   }
 
+  // Aucune colonne de valeurs reconnue : le fichier a beau porter un code
+  // salarié, une équipe et un mois, il n'y a rien à importer. Sans ce contrôle,
+  // chaque ligne était enregistrée avec des zéros partout et l'import annonçait
+  // « Terminé » — un faux succès qui alimente le tableau de bord avec du vide.
+  // Cas réel : le rapport de comparaison GS/CNS, dont les colonnes s'appellent
+  // « Maladie + AT GS » et non « Hrs Maladie ».
+  const colonnesValeurs = [
+    colValMaladie, colHrsMaladie, colJoursMaladie,
+    colValAccident, colHrsAccident,
+    colValRaisFam, colHrsRaisFam,
+    colValAccomp, colHrsAccomp,
+    colValMaternite, colHrsMaternite, colJoursMaternite,
+    colValAccueil, colHrsAccueil, colJoursAccueil,
+    colPctAbs, colHrsTheo,
+  ];
+  if (colonnesValeurs.every((c) => c === -1)) {
+    return {
+      fileType: "absences_cns",
+      data: [],
+      rowCount: 0,
+      errors: [
+        "Aucune colonne de valeurs reconnue (« Hrs Maladie », « Jours Maladie », « % Absentéisme »…). " +
+        "Ce fichier ne semble pas être le relevé d'absences CNS attendu (format SLA_Maladies_CNS_*.xlsx).",
+      ],
+      warnings,
+    };
+  }
+
   const currentYear = new Date().getFullYear();
   const data: AbsenceRow[] = [];
 
@@ -497,6 +531,25 @@ export function parseAbsencesCNS(buffer: ArrayBuffer): WpParseResult {
     errors.push("Aucune donnée d'absence trouvée.");
   }
 
+  // Les colonnes existent mais tout est à zéro : possible (mois sans absence),
+  // mais bien plus souvent le signe d'un mauvais fichier ou d'un export vide.
+  // Avertissement et non erreur, pour ne pas bloquer un import légitime.
+  if (
+    data.length > 0 &&
+    data.every(
+      (d) =>
+        d.hrs_maladie === 0 && d.jours_maladie === 0 && d.val_maladie === 0 &&
+        d.hrs_accident === 0 && d.hrs_maternite === 0 && d.hrs_accueil === 0 &&
+        d.hrs_raisons_familiales === 0 && d.hrs_conge_accompagnement === 0 &&
+        d.heures_theoriques === 0 && d.pct_absenteisme === 0
+    )
+  ) {
+    warnings.push(
+      `Les ${data.length} lignes lues ne contiennent que des valeurs nulles. ` +
+      "Vérifiez qu'il s'agit bien du relevé d'absences CNS et non d'un autre export."
+    );
+  }
+
   // Detect month from data
   const months = [...new Set(data.map((d) => d.mois).filter((m) => m > 0))];
   const detectedMonth = months.length === 1 ? months[0] : undefined;
@@ -519,6 +572,13 @@ export interface AbsenceMctRow {
   mois: number;
   annee: number;
 }
+
+/**
+ * Codes de prestation considérés comme de véritables absences.
+ * CMALAD = maladie, ACCIDE = accident, RAIFAM = raisons familiales.
+ * Tout autre code est importé mais signalé ; CONGES est écarté d'office.
+ */
+const PRESTATIONS_ABSENCE = new Set(["CMALAD", "ACCIDE", "RAIFAM"]);
 
 export function parseAbsencesMCT(buffer: ArrayBuffer): WpParseResult {
   const errors: string[] = [];
@@ -562,6 +622,8 @@ export function parseAbsencesMCT(buffer: ArrayBuffer): WpParseResult {
   const data: AbsenceMctRow[] = [];
   let totalRows = 0;
   let filteredOut = 0;
+  let congesEcartes = 0;
+  const codesInconnus = new Map<string, number>();
 
   for (let i = header.index + 1; i < rows.length; i++) {
     const row = rows[i] as unknown[];
@@ -581,9 +643,22 @@ export function parseAbsencesMCT(buffer: ArrayBuffer): WpParseResult {
       continue;
     }
 
+    // Les congés ne sont pas des absences : certains exports les incluent, ce
+    // qui gonflait l'absentéisme (jusqu'à +22 % sur un mois observé). On les
+    // écarte, et on inventorie tout code non reconnu pour le signaler.
+    const prestation = colPrestation >= 0 ? String(row[colPrestation] || "").trim().toUpperCase() : "";
+    if (prestation === "CONGES") {
+      congesEcartes++;
+      continue;
+    }
+    if (prestation && !PRESTATIONS_ABSENCE.has(prestation)) {
+      codesInconnus.set(prestation, (codesInconnus.get(prestation) ?? 0) + 1);
+    }
+
     const dateAbsence = colDate >= 0 ? excelDateToDate(row[colDate]) : null;
-    const mois = dateAbsence ? dateAbsence.getMonth() + 1 : 0;
-    const annee = dateAbsence ? dateAbsence.getFullYear() : 0;
+    // Lecture en UTC : les dates de ce module sont toutes calées sur minuit UTC.
+    const mois = dateAbsence ? dateAbsence.getUTCMonth() + 1 : 0;
+    const annee = dateAbsence ? dateAbsence.getUTCFullYear() : 0;
 
     data.push({
       code_salarie: codeSalarie,
@@ -606,6 +681,24 @@ export function parseAbsencesMCT(buffer: ArrayBuffer): WpParseResult {
     }
   } else {
     warnings.push(`${data.length} absences MCT retenues sur ${totalRows} lignes (${filteredOut} filtrées).`);
+  }
+
+  if (congesEcartes > 0) {
+    warnings.push(
+      `${congesEcartes} ligne(s) de type CONGES écartée(s) : les congés ne sont pas des absences ` +
+      "et fausseraient le taux d'absentéisme."
+    );
+  }
+
+  if (codesInconnus.size > 0) {
+    const detail = [...codesInconnus.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([code, n]) => `${code} (${n})`)
+      .join(", ");
+    warnings.push(
+      `Code(s) de prestation non reconnu(s) : ${detail}. ` +
+      "Ces lignes ont été importées — vérifiez qu'il s'agit bien d'absences."
+    );
   }
 
   // Detect month/year from data
@@ -682,7 +775,10 @@ function parseDateDDMMYYYY(val: string): Date | null {
   const month = parseInt(parts[1], 10);
   const year = parseInt(parts[2], 10);
   if (isNaN(day) || isNaN(month) || isNaN(year)) return null;
-  return new Date(year, month - 1, day);
+  // Minuit UTC, et non minuit local : dateToISO passe par toISOString(), qui
+  // reconvertit en UTC. Construite en local, une date d'un fuseau à l'est de
+  // Greenwich reculait d'un jour (07.01.2025 enregistré en 2025-01-06).
+  return new Date(Date.UTC(year, month - 1, day));
 }
 
 export function parseAbsencesInjustifiees(buffer: ArrayBuffer): WpParseResult {
@@ -736,8 +832,8 @@ export function parseAbsencesInjustifiees(buffer: ArrayBuffer): WpParseResult {
     const dateFin = colFin >= 0 ? parseDateDDMMYYYY(row[colFin] || "") : null;
 
     // Extract month/year from date_debut; fallback to text month column
-    let mois = dateDebut ? dateDebut.getMonth() + 1 : 0;
-    let annee = dateDebut ? dateDebut.getFullYear() : 0;
+    let mois = dateDebut ? dateDebut.getUTCMonth() + 1 : 0;
+    let annee = dateDebut ? dateDebut.getUTCFullYear() : 0;
 
     if ((!mois || !annee) && colMois >= 0) {
       const moisText = normalizeText(row[colMois] || "");

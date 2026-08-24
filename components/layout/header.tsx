@@ -1,6 +1,8 @@
 "use client";
 
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
+import { fetchAll } from "@/lib/supabase/fetch-all";
+import { getLatestRosterPeriod } from "@/lib/utils/roster-period";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -405,9 +407,17 @@ function WorkforceFilters() {
   useEffect(() => {
     async function fetchOptions() {
       const supabase = createClient();
-      const { data } = await supabase
+      // Roster historisé : listes de filtres calées sur la période la plus
+      // récente, faute de quoi elles agrègent tous les mois en base.
+      const periode = await getLatestRosterPeriod(supabase);
+
+      let requete = supabase
         .from("wp_employees")
         .select("description_fonction, centre_cout, description_service, description_equipe, code_salarie");
+      if (periode) requete = requete.eq("mois", periode.mois).eq("annee", periode.annee);
+      // fetchAll : un mois dépasse 1400 salariés, au-delà du plafond de 1000
+      // lignes de PostgREST qui amputait silencieusement les listes de filtres.
+      const data = periode ? await fetchAll(requete) : [];
       if (data) {
         const fns = [...new Set(data.map((e) => e.description_fonction).filter(Boolean))].sort() as string[];
         const ccs = [...new Set(data.map((e) => e.centre_cout).filter(Boolean))].sort() as string[];
